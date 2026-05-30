@@ -46,6 +46,9 @@ public struct SystemSetup: Sendable {
             "chmod 644 '\(RootHelper.plistPath)'",
             "launchctl bootout system/\(RootHelper.label) 2>/dev/null || true",
             "launchctl bootstrap system '\(RootHelper.plistPath)'",
+            // Flush DNS so newly-added .test names resolve immediately (no stale negative cache).
+            "dscacheutil -flushcache",
+            "killall -HUP mDNSResponder",
         ].joined(separator: " ; ")
         try runAdmin(shell)
         return true
