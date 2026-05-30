@@ -27,7 +27,6 @@ final class AppModel {
     private let store: TunnelStore
     private let resolver = RouteResolver()
     private let authority: CertificateAuthority
-    private let sni: SNIResolver
     private let systemSetup = SystemSetup()
     private var server: ProxyServer?
 
@@ -39,7 +38,6 @@ final class AppModel {
             .appendingPathComponent("OpenCan", isDirectory: true)
         self.authority = (try? CertificateAuthorityStore(directory: appSupport).loadOrCreate())
             ?? (try! CertificateAuthority())
-        self.sni = SNIResolver(issuer: LeafIssuer(authority: authority))
         reload()
         registerGlobalShortcut()
     }
@@ -86,15 +84,24 @@ final class AppModel {
             for tunnel in tunnels where tunnel.enabled {
                 await resolver.upsert(host: tunnel.hostname, upstream: tunnel.upstream)
             }
+            let hostnames = tunnels.filter(\.enabled).map(\.hostname)
+            let tlsContext = try TLSContextFactory.makeContext(authority: authority, hostnames: hostnames)
             let server = ProxyServer(resolver: resolver, recorder: recorder)
             _ = try await server.start(host: "127.0.0.1", port: httpPort)
-            _ = try await server.startTLS(host: "127.0.0.1", port: httpsPort, sni: sni)
+            _ = try await server.startTLS(host: "127.0.0.1", port: httpsPort, tlsContext: tlsContext)
             self.server = server
             state = .running
             statusMessage = "Running — https://*.local"
         } catch {
             statusMessage = "Failed to start: \(error.localizedDescription)"
         }
+    }
+
+    /// Rebuilds the HTTPS certificate to cover the current hostnames (after add/edit/delete).
+    private func refreshCertificate() async {
+        guard isRunning else { return }
+        await stop()
+        await start()
     }
 
     func stop() async {
@@ -106,27 +113,23 @@ final class AppModel {
 
     func addTunnel(name: String, host: String, port: Int) async {
         do {
-            let tunnel = try store.create(name: name, upstreamHost: host, upstreamPort: port)
-            await resolver.upsert(host: tunnel.hostname, upstream: tunnel.upstream)
+            try store.create(name: name, upstreamHost: host, upstreamPort: port)
             reload()
-            if isRunning { await applySystemSetup() }
+            await refreshCertificate()
+        } catch TunnelStoreError.duplicateHostname {
+            statusMessage = "A domain with that name already exists"
+        } catch TunnelStoreError.invalidName {
+            statusMessage = "Invalid name (letters, numbers, hyphen only)"
         } catch {
-            statusMessage = "Could not add tunnel: \(error)"
+            statusMessage = "Could not add domain"
         }
     }
 
     func updateTunnel(_ tunnel: TunnelData, name: String, host: String, port: Int) async {
-        let oldHostname = tunnel.hostname
         do {
-            let updated = try store.update(tunnel, name: name, upstreamHost: host, upstreamPort: port)
+            try store.update(tunnel, name: name, upstreamHost: host, upstreamPort: port)
             reload()
-            if isRunning {
-                await resolver.remove(host: oldHostname)
-                if updated.enabled {
-                    await resolver.upsert(host: updated.hostname, upstream: updated.upstream)
-                }
-                if updated.hostname != oldHostname { await applySystemSetup() }
-            }
+            await refreshCertificate()
         } catch TunnelStoreError.duplicateHostname {
             statusMessage = "A domain with that name already exists"
         } catch TunnelStoreError.invalidName {
@@ -139,20 +142,14 @@ final class AppModel {
     func setEnabled(_ tunnel: TunnelData, _ enabled: Bool) async {
         try? store.setEnabled(tunnel, enabled)
         reload()
-        if isRunning {
-            if enabled {
-                await resolver.upsert(host: tunnel.hostname, upstream: tunnel.upstream)
-            } else {
-                await resolver.remove(host: tunnel.hostname)
-            }
-        }
+        await refreshCertificate()
     }
 
     func deleteTunnel(_ tunnel: TunnelData) async {
         await resolver.remove(host: tunnel.hostname)
         try? store.delete(tunnel)
         reload()
-        if isRunning { await applySystemSetup() }
+        await refreshCertificate()
     }
 
     func installCertificateTrust() {

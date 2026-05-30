@@ -50,10 +50,10 @@ private func startDummyUpstream(group: EventLoopGroup) async throws -> Int {
                           upstream: Upstream(host: "127.0.0.1", port: upstreamPort))
     let recorder = TrafficRecorder()
     let ca = try CertificateAuthority()
-    let sni = SNIResolver(issuer: LeafIssuer(authority: ca))
+    let tlsContext = try TLSContextFactory.makeContext(authority: ca, hostnames: ["myapp.localhost"])
 
     let server = ProxyServer(resolver: resolver, recorder: recorder, group: group)
-    let port = try await server.startTLS(host: "127.0.0.1", port: 0, sni: sni)
+    let port = try await server.startTLS(host: "127.0.0.1", port: 0, tlsContext: tlsContext)
 
     let session = URLSession(configuration: .ephemeral, delegate: InsecureTrust(), delegateQueue: nil)
     var req = URLRequest(url: URL(string: "https://127.0.0.1:\(port)/secure")!)

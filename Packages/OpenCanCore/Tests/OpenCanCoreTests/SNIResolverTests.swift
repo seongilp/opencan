@@ -2,17 +2,22 @@ import Testing
 import NIOSSL
 @testable import OpenCanCore
 
-@Test func buildsTLSContextForIssuedHost() async throws {
+@Test func buildsContextForHostnames() throws {
     let ca = try CertificateAuthority()
-    let issuer = LeafIssuer(authority: ca)
-    let sni = SNIResolver(issuer: issuer)
-    _ = try await sni.context(for: "myapp.localhost")
-    // Second lookup must reuse the cache without throwing.
-    _ = try await sni.context(for: "myapp.localhost")
+    _ = try TLSContextFactory.makeContext(authority: ca, hostnames: ["myapp.local", "port5000.local"])
 }
 
-@Test func buildsWildcardContext() async throws {
+@Test func buildsContextForEmptyHostnames() throws {
     let ca = try CertificateAuthority()
-    let sni = SNIResolver(issuer: LeafIssuer(authority: ca))
-    _ = try await sni.context(for: "*.localhost")
+    _ = try TLSContextFactory.makeContext(authority: ca, hostnames: [])
+}
+
+@Test func leafListsEveryHostAsExactSAN() throws {
+    let ca = try CertificateAuthority()
+    let bundle = try LeafIssuer(authority: ca).issue(hosts: ["a.local", "b.local"])
+    let san = try #require(try bundle.certificate.extensions.subjectAlternativeNames)
+    let names = san.map { String(describing: $0) }
+    #expect(names.contains { $0.contains("a.local") })
+    #expect(names.contains { $0.contains("b.local") })
+    #expect(!names.contains { $0.contains("*") })  // no wildcards
 }
