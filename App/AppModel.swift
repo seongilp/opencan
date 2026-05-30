@@ -91,7 +91,7 @@ final class AppModel {
             _ = try await server.startTLS(host: "127.0.0.1", port: httpsPort, tlsContext: tlsContext)
             self.server = server
             state = .running
-            statusMessage = "Running — https://*.local"
+            statusMessage = "Running — https://*.test"
         } catch {
             statusMessage = "Failed to start: \(error.localizedDescription)"
         }
@@ -178,7 +178,7 @@ final class AppModel {
         }
     }
 
-    /// Registers `*.local` in /etc/hosts and installs the 80/443 forwarding helper
+    /// Registers `*.test` in /etc/hosts and installs the 80/443 forwarding helper
     /// (one admin prompt) so clean URLs resolve and connect.
     func applySystemSetup() async {
         let names = tunnels.map(\.hostname)

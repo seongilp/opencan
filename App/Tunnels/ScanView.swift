@@ -29,7 +29,7 @@ struct ScanView: View {
                             Text("127.0.0.1:\(String(port))").font(.body.monospaced())
                             Spacer()
                             TextField("name", text: name(port)).frame(width: 110)
-                            Text(".local").font(.caption).foregroundStyle(.secondary)
+                            Text(".test").font(.caption).foregroundStyle(.secondary)
                             Button("Add") { add(port) }
                                 .disabled((names[port] ?? "").isEmpty)
                         }

@@ -29,7 +29,7 @@ struct TunnelEditView: View {
                 TextField("Upstream port", text: $port)
             }
             if !name.isEmpty {
-                Text("→ https://\(name).local")
+                Text("→ https://\(name).test")
                     .font(.caption.monospaced()).foregroundStyle(.secondary)
             }
             HStack {

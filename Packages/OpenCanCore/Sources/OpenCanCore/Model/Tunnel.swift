@@ -29,8 +29,9 @@ public struct TunnelData: Sendable, Identifiable, Hashable {
         self.createdAt = createdAt
     }
 
-    /// Friendly local hostname, e.g. "myapp.local".
-    public var hostname: String { "\(name).local" }
+    /// Friendly local hostname, e.g. "myapp.test". `.test` is reserved for testing and
+    /// resolves instantly via /etc/hosts (unlike `.local`, which triggers a slow mDNS lookup).
+    public var hostname: String { "\(name).test" }
 
     public var upstream: Upstream { Upstream(host: upstreamHost, port: upstreamPort) }
 }

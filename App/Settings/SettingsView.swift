@@ -7,7 +7,7 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("URLs") {
-                Text("Tunnels are served on standard ports (80/443) via a small root helper, so URLs need no port suffix — e.g. https://myapp.local")
+                Text("Tunnels are served on standard ports (80/443) via a small root helper, so URLs need no port suffix — e.g. https://myapp.test")
                     .font(.caption).foregroundStyle(.secondary)
                 Button("Remove Forwarding Helper") {
                     Task { await model.removeHelper() }
@@ -22,7 +22,7 @@ struct SettingsView: View {
                 Button("Trust Local CA in Keychain") {
                     model.installCertificateTrust()
                 }
-                Text("Removes browser warnings for https://*.local. Asks for authorization once.")
+                Text("Removes browser warnings for https://*.test. Asks for authorization once.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

@@ -59,7 +59,7 @@ struct DomainsView: View {
             Text("No domains yet")
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(Theme.textSecondary)
-            Text("Add a domain to map a friendly .local hostname to a local port.")
+            Text("Add a domain to map a friendly .test hostname to a local port.")
                 .font(.system(size: 13))
                 .foregroundStyle(Theme.textTertiary)
                 .multilineTextAlignment(.center)

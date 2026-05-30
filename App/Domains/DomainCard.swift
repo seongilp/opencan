@@ -53,7 +53,7 @@ struct DomainCard: View {
             Button { open() } label: {
                 HStack(spacing: 0) {
                     Text(tunnel.name).foregroundStyle(Theme.textPrimary)
-                    Text(".local").foregroundStyle(Theme.textSecondary)
+                    Text(".test").foregroundStyle(Theme.textSecondary)
                 }
                 .font(.system(size: 14, weight: .medium))
             }
