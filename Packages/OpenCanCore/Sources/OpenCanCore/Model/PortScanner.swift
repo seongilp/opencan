@@ -3,71 +3,86 @@ import Foundation
 import Darwin
 #endif
 
+/// A discovered local server: a port and the loopback host it's reachable on.
+public struct ScanResult: Sendable, Hashable {
+    public let port: Int
+    public let host: String   // "127.0.0.1" (IPv4) or "::1" (IPv6)
+    public init(port: Int, host: String) {
+        self.port = port
+        self.host = host
+    }
+}
+
 /// Probes localhost ports to discover running dev servers, so they can be registered as tunnels.
 public struct PortScanner: Sendable {
     public init() {}
 
-    /// Common local development ports plus the 3000/4000/5000/8000 ranges.
+    /// Common local development ports: the full 5000s range plus 3000s/4000s/8000s and named ports.
     public static let defaultPorts: [Int] = {
         var ports = Set<Int>()
         for p in 3000...3010 { ports.insert(p) }
         for p in 4000...4010 { ports.insert(p) }
-        for p in 5000...5100 { ports.insert(p) }   // full 5000s range
+        for p in 5000...5999 { ports.insert(p) }   // full 5000s range
         for p in 8000...8010 { ports.insert(p) }
-        // popular named dev ports (vite, angular, storybook, postgres, etc.)
-        ports.formUnion([4200, 5173, 5174, 5432, 5500, 5555, 6006, 8080, 8081, 8443, 8888, 9000, 9090])
+        ports.formUnion([4200, 6006, 8080, 8081, 8443, 8888, 9000, 9090])
         return ports.sorted()
     }()
 
-    /// Returns the subset of `ports` that currently accept TCP connections on `host`.
-    /// Concurrency is bounded so a wide range never exhausts the process file-descriptor limit.
+    /// Returns each port that accepts a TCP connection on IPv4 or IPv6 loopback, tagged with the
+    /// host it was found on. Concurrency is bounded so a wide range never exhausts the fd limit.
     public func scan(ports: [Int] = PortScanner.defaultPorts,
-                     host: String = "127.0.0.1",
                      timeout: TimeInterval = 0.25,
-                     maxConcurrent: Int = 64) async -> [Int] {
-        var open: [Int] = []
+                     maxConcurrent: Int = 64) async -> [ScanResult] {
+        var results: [ScanResult] = []
         var next = 0
-        await withTaskGroup(of: Int?.self) { group in
+        await withTaskGroup(of: ScanResult?.self) { group in
             func enqueue() {
                 guard next < ports.count else { return }
                 let port = ports[next]
                 next += 1
-                group.addTask { Self.isOpen(host: host, port: port, timeout: timeout) ? port : nil }
+                group.addTask {
+                    if Self.isOpen(host: "127.0.0.1", port: port, timeout: timeout) {
+                        return ScanResult(port: port, host: "127.0.0.1")
+                    }
+                    if Self.isOpen(host: "::1", port: port, timeout: timeout) {
+                        return ScanResult(port: port, host: "::1")
+                    }
+                    return nil
+                }
             }
             for _ in 0..<min(maxConcurrent, ports.count) { enqueue() }
             for await result in group {
-                if let port = result { open.append(port) }
+                if let result { results.append(result) }
                 enqueue()
             }
         }
-        return open.sorted()
+        return results.sorted { $0.port < $1.port }
     }
 
-    /// Non-blocking TCP connect with a timeout; true if something is listening.
+    /// Non-blocking TCP connect with a timeout; true if something is listening. Uses
+    /// `getaddrinfo`, so it works for IPv4 ("127.0.0.1"), IPv6 ("::1"), and names ("localhost").
     static func isOpen(host: String, port: Int, timeout: TimeInterval) -> Bool {
-        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        var hints = addrinfo()
+        hints.ai_family = AF_UNSPEC
+        hints.ai_socktype = SOCK_STREAM
+        hints.ai_protocol = IPPROTO_TCP
+        var res: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host, String(port), &hints, &res) == 0, let info = res else { return false }
+        defer { freeaddrinfo(res) }
+
+        let fd = socket(info.pointee.ai_family, info.pointee.ai_socktype, info.pointee.ai_protocol)
         guard fd >= 0 else { return false }
         defer { close(fd) }
-
-        var addr = sockaddr_in()
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = in_port_t(port).bigEndian
-        guard inet_pton(AF_INET, host, &addr.sin_addr) == 1 else { return false }
 
         let flags = fcntl(fd, F_GETFL, 0)
         _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
 
-        let rc = withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        }
+        let rc = connect(fd, info.pointee.ai_addr, info.pointee.ai_addrlen)
         if rc == 0 { return true }
         if errno != EINPROGRESS { return false }
 
         var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
-        let ready = poll(&pfd, 1, Int32(timeout * 1000))
-        guard ready > 0 else { return false }
+        guard poll(&pfd, 1, Int32(timeout * 1000)) > 0 else { return false }
 
         var soError: Int32 = 0
         var len = socklen_t(MemoryLayout<Int32>.size)

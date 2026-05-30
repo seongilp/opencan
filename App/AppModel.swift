@@ -67,14 +67,12 @@ final class AppModel {
         tunnels = (try? store.all()) ?? []
     }
 
-    /// Scans common local dev ports and returns open ones not already tunneled (and not ours).
-    func scanForServices() async -> [Int] {
+    /// Scans common local dev ports (IPv4 + IPv6) and returns open ones not already tunneled.
+    func scanForServices() async -> [ScanResult] {
         let mine: Set<Int> = [httpPort, httpsPort]
-        let existing = Set(tunnels
-            .filter { $0.upstreamHost == "127.0.0.1" || $0.upstreamHost == "localhost" }
-            .map(\.upstreamPort))
+        let existing = Set(tunnels.map(\.upstreamPort))
         let found = await PortScanner().scan()
-        return found.filter { !mine.contains($0) && !existing.contains($0) }
+        return found.filter { !mine.contains($0.port) && !existing.contains($0.port) }
     }
 
     func start() async {

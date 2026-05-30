@@ -6,26 +6,35 @@ import NIOPosix
 
 @Test func detectsAnOpenPortAndIgnoresClosedOnes() async throws {
     let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-    // Bind a listener on an ephemeral port.
     let channel = try await ServerBootstrap(group: group)
         .childChannelInitializer { _ in group.next().makeSucceededFuture(()) }
         .bind(host: "127.0.0.1", port: 0).get()
     let openPort = channel.localAddress!.port!
 
     let scanner = PortScanner()
-    let found = await scanner.scan(ports: [openPort], host: "127.0.0.1")
-    #expect(found == [openPort])
-
-    // A port nobody is listening on (use the open port + 1 is risky; pick a high unlikely one).
-    let closed = await scanner.scan(ports: [openPort], host: "127.0.0.1")
-    #expect(closed.contains(openPort))
+    let found = await scanner.scan(ports: [openPort])
+    #expect(found.contains { $0.port == openPort && $0.host == "127.0.0.1" })
 
     try await channel.close().get()
     try await group.shutdownGracefully()
 
-    // After close, the port should no longer be open.
-    let afterClose = await scanner.scan(ports: [openPort], host: "127.0.0.1")
-    #expect(!afterClose.contains(openPort))
+    let afterClose = await scanner.scan(ports: [openPort])
+    #expect(!afterClose.contains { $0.port == openPort })
+}
+
+@Test func detectsIPv6OnlyServer() async throws {
+    let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+    // Bind on IPv6 loopback only (like Vite/Node default).
+    let channel = try await ServerBootstrap(group: group)
+        .childChannelInitializer { _ in group.next().makeSucceededFuture(()) }
+        .bind(host: "::1", port: 0).get()
+    let openPort = channel.localAddress!.port!
+
+    let found = await PortScanner().scan(ports: [openPort])
+    #expect(found.contains { $0.port == openPort && $0.host == "::1" })
+
+    try await channel.close().get()
+    try await group.shutdownGracefully()
 }
 
 @Test func boundedScanOverWideRangeStillFindsOpenPort() async throws {
@@ -35,11 +44,10 @@ import NIOPosix
         .bind(host: "127.0.0.1", port: 0).get()
     let openPort = channel.localAddress!.port!
 
-    // Many mostly-closed ports plus the open one, with a small concurrency cap.
     var ports = Array(20000..<20200)
     ports.append(openPort)
-    let found = await PortScanner().scan(ports: ports, host: "127.0.0.1", maxConcurrent: 16)
-    #expect(found.contains(openPort))
+    let found = await PortScanner().scan(ports: ports, maxConcurrent: 16)
+    #expect(found.contains { $0.port == openPort })
 
     try await channel.close().get()
     try await group.shutdownGracefully()
@@ -48,9 +56,9 @@ import NIOPosix
 @Test func defaultPortsCoverFull5000sRange() {
     let ports = Set(PortScanner.defaultPorts)
     #expect(ports.contains(5000))
-    #expect(ports.contains(5050))
-    #expect(ports.contains(5100))
-    #expect(ports.contains(5173))  // vite
+    #expect(ports.contains(5173))   // vite
+    #expect(ports.contains(5500))
+    #expect(ports.contains(5999))
 }
 
 @Test func suggestedNameIsDNSSafe() {

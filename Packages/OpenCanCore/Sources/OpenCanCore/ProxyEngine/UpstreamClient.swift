@@ -28,7 +28,11 @@ enum UpstreamClient {
                     collector.fail(error)
                 case .success(let channel):
                     var requestHead = head
-                    requestHead.headers.replaceOrAdd(name: "host", value: "\(upstream.host):\(upstream.port)")
+                    // Bracket IPv6 literals in the Host header (e.g. [::1]:5173).
+                    let hostValue = upstream.host.contains(":")
+                        ? "[\(upstream.host)]:\(upstream.port)"
+                        : "\(upstream.host):\(upstream.port)"
+                    requestHead.headers.replaceOrAdd(name: "host", value: hostValue)
                     channel.write(HTTPClientRequestPart.head(requestHead), promise: nil)
                     if body.readableBytes > 0 {
                         channel.write(HTTPClientRequestPart.body(.byteBuffer(body)), promise: nil)
