@@ -8,21 +8,23 @@ collected in [twostraws/swift-agent-skills](https://github.com/twostraws/swift-a
 
 ## Features
 
-- **Reverse proxy** — `myapp.local:8443` → `127.0.0.1:3000`, routed by Host/SNI on a single
+- **Reverse proxy** — `https://myapp.local` → `127.0.0.1:3000`, routed by Host/SNI on a single
   embedded SwiftNIO proxy.
-- **`.local` domains** — friendly hostnames registered in `/etc/hosts` (one-time admin auth)
-  so they resolve to loopback.
+- **Clean port-less URLs** — a small root LaunchDaemon binds 80/443 and forwards to the app's
+  unprivileged listeners, so URLs need no port suffix.
+- **`.local` domains** — friendly hostnames registered in `/etc/hosts` (one-time admin auth).
 - **Local HTTPS** — a locally-issued wildcard `*.local` certificate; one-click trust install
   removes browser warnings.
+- **Port auto-scan** — discover running dev servers (3000/4000/5000/8000 ranges) and register
+  them as tunnels in one click.
 - **Traffic inspector** — live request/response log (method, host, path, status).
-- **Click to open** — click a tunnel in the list to open it in your browser.
+- **Click to open** — click a tunnel to open it in your browser; visible delete button + swipe.
 - **Global shortcut** — assign a system-wide hotkey (Settings) to start/stop the proxy.
-- **Menu bar + window** — quick start/stop from the menu bar; manage tunnels and traffic in the
-  main window.
+- **Menu bar + window** — quick start/stop from the menu bar; manage tunnels and traffic.
 
-No public relay and no persistent privileged helper: the proxy uses fixed high ports
-(HTTP 8080, HTTPS 8443). The app updates `/etc/hosts` for `.local` names via a one-time
-administrator authorization prompt.
+No public relay. The app listens on unprivileged ports (48080/48443); on first Start it
+registers `/etc/hosts` and installs a tiny `python3` forwarding LaunchDaemon for 80/443 via a
+single administrator prompt.
 
 ## Requirements
 
@@ -51,7 +53,7 @@ open OpenCan.xcodeproj    # then run the OpenCan scheme
 1. Start the proxy from the menu bar or the main window's **Start** button.
 2. Add a tunnel: name `myapp`, upstream `127.0.0.1:3000`.
 3. Run a local server (e.g. `python3 -m http.server 3000`).
-4. Visit `https://myapp.local:8443` (or `http://myapp.local:8080`).
+4. Visit `https://myapp.local` (no port needed).
 5. Optional: **Settings ▸ Trust Local CA** to remove browser certificate warnings.
 
 ## Architecture

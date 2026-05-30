@@ -13,8 +13,12 @@ final class AppModel {
     private(set) var statusMessage = "Stopped"
     private(set) var tunnels: [TunnelData] = []
 
-    let httpPort = 8080
-    let httpsPort = 8443
+    // App listens on uncommon high ports (avoids conflicts); the root helper binds 80/443
+    // and forwards onto these, so URLs need no port suffix.
+    let httpPort = 48080
+    let httpsPort = 48443
+    let publicHTTPPort = 80
+    let publicHTTPSPort = 443
 
     let recorder = TrafficRecorder()
 
@@ -37,9 +41,9 @@ final class AppModel {
 
     var isRunning: Bool { state == .running }
 
-    /// HTTPS URL for a tunnel.
+    /// Clean HTTPS URL for a tunnel (no port — the root helper forwards 443 → bind port).
     func urlString(for tunnel: TunnelData) -> String {
-        "https://\(tunnel.hostname):\(httpsPort)"
+        "https://\(tunnel.hostname)"
     }
 
     /// URL to open a tunnel in the browser.
@@ -77,7 +81,7 @@ final class AppModel {
             _ = try await server.startTLS(host: "127.0.0.1", port: httpsPort, sni: sni)
             self.server = server
             state = .running
-            statusMessage = "Running on :\(httpPort) / :\(httpsPort)"
+            statusMessage = "Running — https://*.local"
         } catch {
             statusMessage = "Failed to start: \(error.localizedDescription)"
         }
@@ -118,14 +122,30 @@ final class AppModel {
         statusMessage = status == 0 ? "Local CA trusted" : "CA trust install cancelled"
     }
 
-    /// Registers `*.local` hostnames in /etc/hosts (one admin prompt) so they resolve.
+    /// Registers `*.local` in /etc/hosts and installs the 80/443 forwarding helper
+    /// (one admin prompt) so clean URLs resolve and connect.
     func applySystemSetup() async {
         let names = tunnels.map(\.hostname)
         let setup = systemSetup
+        let mappings = [
+            RootHelper.Mapping(publicPort: publicHTTPSPort, bindPort: httpsPort),
+            RootHelper.Mapping(publicPort: publicHTTPPort, bindPort: httpPort),
+        ]
         do {
-            try await Task.detached { try setup.registerHosts(names) }.value
+            try await Task.detached { try setup.apply(hostnames: names, mappings: mappings) }.value
         } catch {
-            statusMessage = "Hosts update needs admin permission"
+            statusMessage = "System setup needs admin permission"
+        }
+    }
+
+    /// Removes the root forwarding helper (Settings).
+    func removeHelper() async {
+        let setup = systemSetup
+        do {
+            try await Task.detached { try setup.removeHelper() }.value
+            statusMessage = "Helper removed"
+        } catch {
+            statusMessage = "Could not remove helper"
         }
     }
 

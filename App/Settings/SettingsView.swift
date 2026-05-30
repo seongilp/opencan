@@ -6,9 +6,12 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("Ports") {
-                LabeledContent("HTTP", value: ":\(model.httpPort)")
-                LabeledContent("HTTPS", value: ":\(model.httpsPort)")
+            Section("URLs") {
+                Text("Tunnels are served on standard ports (80/443) via a small root helper, so URLs need no port suffix — e.g. https://myapp.local")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("Remove Forwarding Helper") {
+                    Task { await model.removeHelper() }
+                }
             }
             Section("Global Shortcut") {
                 KeyboardShortcuts.Recorder("Start / stop proxy:", name: .toggleProxy)
@@ -24,6 +27,6 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 440, height: 320)
+        .frame(width: 460, height: 380)
     }
 }

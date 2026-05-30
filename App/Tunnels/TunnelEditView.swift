@@ -16,7 +16,7 @@ struct TunnelEditView: View {
                 TextField("Upstream port", text: $port)
             }
             if !name.isEmpty {
-                Text("→ https://\(name).local:8443")
+                Text("→ https://\(name).local")
                     .font(.caption.monospaced()).foregroundStyle(.secondary)
             }
             HStack {
