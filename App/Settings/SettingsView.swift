@@ -7,10 +7,8 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("Ports") {
-                LabeledContent("Public", value: "80 / 443 (no port in URL)")
-                LabeledContent("Bind", value: ":\(model.httpPort) / :\(model.httpsPort)")
-                Text("The app binds unprivileged ports; a pf rule forwards 80/443 onto them so URLs need no port suffix.")
-                    .font(.caption).foregroundStyle(.secondary)
+                LabeledContent("HTTP", value: ":\(model.httpPort)")
+                LabeledContent("HTTPS", value: ":\(model.httpsPort)")
             }
             Section("Global Shortcut") {
                 KeyboardShortcuts.Recorder("Start / stop proxy:", name: .toggleProxy)

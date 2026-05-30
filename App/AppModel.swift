@@ -13,12 +13,8 @@ final class AppModel {
     private(set) var statusMessage = "Stopped"
     private(set) var tunnels: [TunnelData] = []
 
-    // Unprivileged bind ports; pf forwards the public ports below onto these.
     let httpPort = 8080
     let httpsPort = 8443
-    // Public ports users actually connect on (no port suffix in URLs).
-    let publicHTTPPort = 80
-    let publicHTTPSPort = 443
 
     let recorder = TrafficRecorder()
 
@@ -41,9 +37,9 @@ final class AppModel {
 
     var isRunning: Bool { state == .running }
 
-    /// Clean HTTPS URL for a tunnel (no port suffix — pf forwards 443 → bind port).
+    /// HTTPS URL for a tunnel.
     func urlString(for tunnel: TunnelData) -> String {
-        "https://\(tunnel.hostname)"
+        "https://\(tunnel.hostname):\(httpsPort)"
     }
 
     /// URL to open a tunnel in the browser.
@@ -59,6 +55,16 @@ final class AppModel {
         tunnels = (try? store.all()) ?? []
     }
 
+    /// Scans common local dev ports and returns open ones not already tunneled (and not ours).
+    func scanForServices() async -> [Int] {
+        let mine: Set<Int> = [httpPort, httpsPort]
+        let existing = Set(tunnels
+            .filter { $0.upstreamHost == "127.0.0.1" || $0.upstreamHost == "localhost" }
+            .map(\.upstreamPort))
+        let found = await PortScanner().scan()
+        return found.filter { !mine.contains($0) && !existing.contains($0) }
+    }
+
     func start() async {
         guard !isRunning else { return }
         await applySystemSetup()
@@ -71,7 +77,7 @@ final class AppModel {
             _ = try await server.startTLS(host: "127.0.0.1", port: httpsPort, sni: sni)
             self.server = server
             state = .running
-            statusMessage = "Running on https://*.local"
+            statusMessage = "Running on :\(httpPort) / :\(httpsPort)"
         } catch {
             statusMessage = "Failed to start: \(error.localizedDescription)"
         }
@@ -80,7 +86,6 @@ final class AppModel {
     func stop() async {
         await server?.stop()
         server = nil
-        await teardownForwarding()
         state = .stopped
         statusMessage = "Stopped"
     }
@@ -113,24 +118,15 @@ final class AppModel {
         statusMessage = status == 0 ? "Local CA trusted" : "CA trust install cancelled"
     }
 
-    /// Registers `*.local` in /etc/hosts and loads pf port forwarding (one admin prompt).
+    /// Registers `*.local` hostnames in /etc/hosts (one admin prompt) so they resolve.
     func applySystemSetup() async {
         let names = tunnels.map(\.hostname)
         let setup = systemSetup
-        let mappings = [
-            SystemSetup.PortMapping(from: publicHTTPSPort, to: httpsPort),
-            SystemSetup.PortMapping(from: publicHTTPPort, to: httpPort),
-        ]
         do {
-            try await Task.detached { try setup.apply(hostnames: names, mappings: mappings) }.value
+            try await Task.detached { try setup.registerHosts(names) }.value
         } catch {
-            statusMessage = "System setup needs admin permission"
+            statusMessage = "Hosts update needs admin permission"
         }
-    }
-
-    private func teardownForwarding() async {
-        let setup = systemSetup
-        try? await Task.detached { try setup.teardownForwarding() }.value
     }
 
     private func registerGlobalShortcut() {

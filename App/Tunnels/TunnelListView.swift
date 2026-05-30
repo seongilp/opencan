@@ -4,6 +4,7 @@ import OpenCanCore
 struct TunnelListView: View {
     @Environment(AppModel.self) private var model
     @State private var showingAdd = false
+    @State private var showingScan = false
 
     var body: some View {
         List {
@@ -17,12 +18,18 @@ struct TunnelListView: View {
         }
         .navigationTitle("Tunnels")
         .toolbar {
+            Button { showingScan = true } label: { Image(systemName: "magnifyingglass") }
+                .help("Scan local ports for running servers")
             Button { showingAdd = true } label: { Image(systemName: "plus") }
+                .help("Add a tunnel")
         }
         .sheet(isPresented: $showingAdd) {
             TunnelEditView { name, host, port in
                 Task { await model.addTunnel(name: name, host: host, port: port) }
             }
+        }
+        .sheet(isPresented: $showingScan) {
+            ScanView()
         }
         .overlay {
             if model.tunnels.isEmpty {
