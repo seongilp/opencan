@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import LocalPortCore
+@testable import OpenCanCore
 
 @Test func writesCAFileForInstall() throws {
     let ca = try CertificateAuthority()

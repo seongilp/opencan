@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 import X509
-@testable import LocalPortCore
+@testable import OpenCanCore
 
 @Test func issuesLeafChainingToCA() throws {
     let ca = try CertificateAuthority()

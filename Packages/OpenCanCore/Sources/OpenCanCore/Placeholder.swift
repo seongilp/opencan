@@ -1,3 +1,3 @@
-enum LocalPortCore {
+enum OpenCanCore {
     static let version = "0.1.0"
 }

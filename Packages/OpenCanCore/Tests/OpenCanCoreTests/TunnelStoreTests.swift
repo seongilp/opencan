@@ -1,5 +1,5 @@
 import Testing
-@testable import LocalPortCore
+@testable import OpenCanCore
 
 @MainActor
 private func makeStore() -> TunnelStore {

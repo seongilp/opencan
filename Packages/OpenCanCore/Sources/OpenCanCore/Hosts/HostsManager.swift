@@ -2,7 +2,7 @@ import Foundation
 
 public struct HostsManager: Sendable {
     public static let defaultHostsFile = URL(fileURLWithPath: "/etc/hosts")
-    private static let marker = "# LocalPort"
+    private static let marker = "# OpenCan"
 
     private let hostsFile: URL
 

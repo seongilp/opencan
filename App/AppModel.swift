@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 import SwiftData
-import LocalPortCore
+import OpenCanCore
 
 @Observable
 @MainActor

@@ -5,7 +5,7 @@ public struct KeychainTrust: Sendable {
 
     /// Writes the CA certificate to a `.pem` file for installation; returns its URL.
     public func exportCACertificate(_ ca: CertificateAuthority, to directory: URL) throws -> URL {
-        let url = directory.appendingPathComponent("LocalPort-CA.pem")
+        let url = directory.appendingPathComponent("OpenCan-CA.pem")
         try ca.certificatePEM().write(to: url, atomically: true, encoding: .utf8)
         return url
     }

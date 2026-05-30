@@ -7,7 +7,7 @@ public struct CertificateAuthority: Sendable {
     public let privateKey: Certificate.PrivateKey
 
     /// Generates a fresh self-signed root CA valid for 10 years.
-    public init(commonName: String = "LocalPort Local CA",
+    public init(commonName: String = "OpenCan Local CA",
                 notValidBefore: Date = Date(timeIntervalSinceNow: -3600),
                 lifetime: TimeInterval = 60 * 60 * 24 * 365 * 10) throws {
         let key = P256.Signing.PrivateKey()

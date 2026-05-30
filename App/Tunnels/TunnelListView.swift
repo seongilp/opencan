@@ -1,5 +1,5 @@
 import SwiftUI
-import LocalPortCore
+import OpenCanCore
 
 struct TunnelListView: View {
     @Environment(AppModel.self) private var model

@@ -1,4 +1,4 @@
-# LocalPort
+# OpenCan
 
 A native macOS reverse proxy for local development. Map friendly `*.localhost` hostnames to
 local ports, get local HTTPS, and inspect HTTP traffic live. Local-only — no cloud relay.
@@ -37,8 +37,8 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
 The macOS app:
 
 ```sh
-xcodegen generate          # creates LocalPort.xcodeproj from project.yml
-open LocalPort.xcodeproj    # then run the LocalPort scheme
+xcodegen generate          # creates OpenCan.xcodeproj from project.yml
+open OpenCan.xcodeproj    # then run the OpenCan scheme
 ```
 
 ## Usage
@@ -51,11 +51,11 @@ open LocalPort.xcodeproj    # then run the LocalPort scheme
 
 ## Architecture
 
-- `Packages/LocalPortCore` — pure, fully-tested logic (no UI dependency): proxy engine,
+- `Packages/OpenCanCore` — pure, fully-tested logic (no UI dependency): proxy engine,
   certificate authority, traffic recorder, persistence (repository pattern).
 - `App/` — thin SwiftUI shell over a single `@Observable` `AppModel`.
 
 Design and implementation notes:
 
-- `docs/superpowers/specs/2026-05-30-localport-design.md`
-- `docs/superpowers/plans/2026-05-30-localport.md`
+- `docs/superpowers/specs/2026-05-30-opencan-design.md`
+- `docs/superpowers/plans/2026-05-30-opencan.md`

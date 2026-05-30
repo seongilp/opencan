@@ -2,10 +2,10 @@
 import PackageDescription
 
 let package = Package(
-    name: "LocalPortCore",
+    name: "OpenCanCore",
     platforms: [.macOS(.v14)],
     products: [
-        .library(name: "LocalPortCore", targets: ["LocalPortCore"]),
+        .library(name: "OpenCanCore", targets: ["OpenCanCore"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
@@ -15,7 +15,7 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "LocalPortCore",
+            name: "OpenCanCore",
             dependencies: [
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
@@ -24,12 +24,12 @@ let package = Package(
                 .product(name: "X509", package: "swift-certificates"),
                 .product(name: "Crypto", package: "swift-crypto"),
             ],
-            path: "Packages/LocalPortCore/Sources/LocalPortCore"
+            path: "Packages/OpenCanCore/Sources/OpenCanCore"
         ),
         .testTarget(
-            name: "LocalPortCoreTests",
-            dependencies: ["LocalPortCore"],
-            path: "Packages/LocalPortCore/Tests/LocalPortCoreTests"
+            name: "OpenCanCoreTests",
+            dependencies: ["OpenCanCore"],
+            path: "Packages/OpenCanCore/Tests/OpenCanCoreTests"
         ),
     ]
 )

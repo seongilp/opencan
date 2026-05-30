@@ -1,18 +1,18 @@
 import SwiftUI
 
 @main
-struct LocalPortApp: App {
+struct OpenCanApp: App {
     @State private var model = AppModel()
 
     var body: some Scene {
-        Window("LocalPort", id: "main") {
+        Window("OpenCan", id: "main") {
             ContentView()
                 .environment(model)
                 .frame(minWidth: 760, minHeight: 480)
         }
         .windowResizability(.contentMinSize)
 
-        MenuBarExtra("LocalPort", systemImage: model.isRunning ? "bolt.fill" : "bolt.slash") {
+        MenuBarExtra("OpenCan", systemImage: model.isRunning ? "bolt.fill" : "bolt.slash") {
             MenuBarView()
                 .environment(model)
         }

@@ -1,6 +1,6 @@
 import Testing
 import NIOSSL
-@testable import LocalPortCore
+@testable import OpenCanCore
 
 @Test func buildsTLSContextForIssuedHost() async throws {
     let ca = try CertificateAuthority()

@@ -16,7 +16,7 @@ struct MenuBarView: View {
 
             Divider()
 
-            Button("Open LocalPort") {
+            Button("Open OpenCan") {
                 NSApp.activate(ignoringOtherApps: true)
                 openWindow(id: "main")
             }

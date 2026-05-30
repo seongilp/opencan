@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-@testable import LocalPortCore
+@testable import OpenCanCore
 
 private func tempFile(_ contents: String = "") throws -> URL {
     let url = FileManager.default.temporaryDirectory

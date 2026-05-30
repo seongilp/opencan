@@ -1,5 +1,5 @@
 import Testing
-@testable import LocalPortCore
+@testable import OpenCanCore
 
 @Test func resolvesExactHost() async {
     let r = RouteResolver()

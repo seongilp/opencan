@@ -1,4 +1,4 @@
-# LocalPort — Design Spec
+# OpenCan — Design Spec
 
 **Date:** 2026-05-30
 **Status:** Approved (brainstorming complete)
@@ -6,7 +6,7 @@
 
 ## 1. Summary
 
-LocalPort is a native macOS app that exposes local development servers through friendly
+OpenCan is a native macOS app that exposes local development servers through friendly
 hostnames over a local reverse proxy, terminates TLS with a locally-issued certificate,
 and inspects HTTP traffic in real time. It is **local-only** — there is no public internet
 relay server. Scope is intentionally constrained so the app is fully functional with no
@@ -47,7 +47,7 @@ backend infrastructure.
 ## 3. Architecture
 
 ```
-SwiftUI App (LocalPortApp)
+SwiftUI App (OpenCanApp)
   MenuBarExtra (toggle, status)  +  Main Window (tunnels, inspector, settings)
         |  @Observable view models, async streams
 ProxyEngine (SwiftNIO actor)
@@ -66,19 +66,19 @@ request's Host header (and TLS SNI for certificate selection). Default addresses
 
 ## 4. Module / Package Layout
 
-Core logic lives in an SPM package (`LocalPortCore`) with no SwiftUI/AppKit dependency so it
+Core logic lives in an SPM package (`OpenCanCore`) with no SwiftUI/AppKit dependency so it
 is unit-testable. The Xcode app target is a thin SwiftUI shell.
 
 ```
-LocalPort/
-  LocalPort.xcodeproj                 # app shell: menu bar + window, code signing
+OpenCan/
+  OpenCan.xcodeproj                 # app shell: menu bar + window, code signing
   App/                                # SwiftUI layer (app target)
-    LocalPortApp.swift                # @main, MenuBarExtra + Window
+    OpenCanApp.swift                # @main, MenuBarExtra + Window
     MenuBar/                          # menu bar views + toggle
     Tunnels/                          # tunnel list/edit views + view models
     Inspector/                        # traffic inspector views + view model
     Settings/                         # certificate / port / domain settings
-  Packages/LocalPortCore/             # pure logic (no app deps, unit tested)
+  Packages/OpenCanCore/             # pure logic (no app deps, unit tested)
     Sources/
       ProxyEngine/
         ProxyServer.swift             # listener bootstrap (actor)
@@ -151,7 +151,7 @@ internally; no silently swallowed errors.
 
 ## 7. Testing Strategy
 
-Core package tested with **Swift Testing**; target 80%+ coverage on `LocalPortCore`.
+Core package tested with **Swift Testing**; target 80%+ coverage on `OpenCanCore`.
 
 - **RouteResolver** — Host/SNI -> upstream mapping (wildcard, case-insensitivity, port split).
 - **CertificateAuthority / LeafIssuer** — issued leaf verifies against root; SAN includes host.

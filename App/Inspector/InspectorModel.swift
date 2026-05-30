@@ -1,6 +1,6 @@
 import Foundation
 import Observation
-import LocalPortCore
+import OpenCanCore
 
 @Observable
 @MainActor
