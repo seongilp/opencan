@@ -33,14 +33,26 @@ public actor ProxyServer {
             .serverChannelOption(ChannelOptions.backlog, value: 256)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { channel in
-                channel.pipeline.configureHTTPServerPipeline().flatMap {
-                    channel.pipeline.addHandler(ProxyHandler(resolver: resolver, recorder: recorder))
-                }
+                Self.configureProxyPipeline(channel, resolver: resolver, recorder: recorder)
             }
             .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
         let bound = try await bootstrap.bind(host: host, port: port).get()
         self.channel = bound
         return bound.localAddress?.port ?? port
+    }
+
+    /// HTTP server pipeline that supports protocol upgrades: the request decoder forwards any
+    /// leftover bytes when removed, so ProxyHandler can splice WebSocket connections raw.
+    static func configureProxyPipeline(_ channel: Channel, resolver: RouteResolver,
+                                       recorder: TrafficRecorder) -> EventLoopFuture<Void> {
+        let encoder = HTTPResponseEncoder()
+        let decoder = ByteToMessageHandler(HTTPRequestDecoder(leftOverBytesStrategy: .forwardBytes))
+        return channel.pipeline.addHandler(encoder).flatMap {
+            channel.pipeline.addHandler(decoder)
+        }.flatMap {
+            channel.pipeline.addHandler(ProxyHandler(resolver: resolver, recorder: recorder,
+                                                     httpEncoder: encoder, httpDecoder: decoder))
+        }
     }
 
     /// Starts an HTTPS listener that terminates TLS with `tlsContext` (a leaf certificate
@@ -55,9 +67,7 @@ public actor ProxyServer {
             .childChannelInitializer { channel in
                 let sslHandler = NIOSSLServerHandler(context: tlsContext)
                 return channel.pipeline.addHandler(sslHandler).flatMap {
-                    channel.pipeline.configureHTTPServerPipeline()
-                }.flatMap {
-                    channel.pipeline.addHandler(ProxyHandler(resolver: resolver, recorder: recorder))
+                    Self.configureProxyPipeline(channel, resolver: resolver, recorder: recorder)
                 }
             }
             .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
