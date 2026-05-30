@@ -33,6 +33,24 @@ public final class TunnelStore {
     }
 
     @discardableResult
+    public func update(_ tunnel: TunnelData, name: String, upstreamHost: String,
+                       upstreamPort: Int) throws -> TunnelData {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !trimmed.isEmpty, trimmed.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" }) else {
+            throw TunnelStoreError.invalidName
+        }
+        if try all().contains(where: { $0.name == trimmed && $0.id != tunnel.id }) {
+            throw TunnelStoreError.duplicateHostname
+        }
+        var updated = tunnel
+        updated.name = trimmed
+        updated.upstreamHost = upstreamHost
+        updated.upstreamPort = upstreamPort
+        try persistence.update(updated)
+        return updated
+    }
+
+    @discardableResult
     public func setEnabled(_ tunnel: TunnelData, _ enabled: Bool) throws -> TunnelData {
         var updated = tunnel
         updated.enabled = enabled

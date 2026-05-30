@@ -5,6 +5,7 @@ struct DomainsView: View {
     @Environment(AppModel.self) private var model
     let tunnels: [TunnelData]
     @Binding var showingAdd: Bool
+    @State private var editing: TunnelData?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -15,11 +16,16 @@ struct DomainsView: View {
                 ScrollView {
                     VStack(spacing: 14) {
                         ForEach(tunnels) { tunnel in
-                            DomainCard(tunnel: tunnel)
+                            DomainCard(tunnel: tunnel) { editing = tunnel }
                         }
                     }
                     .padding(24)
                 }
+            }
+        }
+        .sheet(item: $editing) { tunnel in
+            TunnelEditView(initial: tunnel) { name, host, port in
+                Task { await model.updateTunnel(tunnel, name: name, host: host, port: port) }
             }
         }
     }

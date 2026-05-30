@@ -4,6 +4,7 @@ import OpenCanCore
 struct DomainCard: View {
     @Environment(AppModel.self) private var model
     let tunnel: TunnelData
+    var onEdit: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -98,6 +99,7 @@ struct DomainCard: View {
     private var cardMenu: some View {
         Menu {
             Button("Open in Browser") { open() }
+            Button("Edit…") { onEdit() }
             Button("Copy URL") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(model.urlString(for: tunnel), forType: .string)

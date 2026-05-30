@@ -111,6 +111,27 @@ final class AppModel {
         }
     }
 
+    func updateTunnel(_ tunnel: TunnelData, name: String, host: String, port: Int) async {
+        let oldHostname = tunnel.hostname
+        do {
+            let updated = try store.update(tunnel, name: name, upstreamHost: host, upstreamPort: port)
+            reload()
+            if isRunning {
+                await resolver.remove(host: oldHostname)
+                if updated.enabled {
+                    await resolver.upsert(host: updated.hostname, upstream: updated.upstream)
+                }
+                if updated.hostname != oldHostname { await applySystemSetup() }
+            }
+        } catch TunnelStoreError.duplicateHostname {
+            statusMessage = "A domain with that name already exists"
+        } catch TunnelStoreError.invalidName {
+            statusMessage = "Invalid name (letters, numbers, hyphen only)"
+        } catch {
+            statusMessage = "Could not update domain"
+        }
+    }
+
     func setEnabled(_ tunnel: TunnelData, _ enabled: Bool) async {
         try? store.setEnabled(tunnel, enabled)
         reload()

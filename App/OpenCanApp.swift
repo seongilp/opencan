@@ -43,6 +43,7 @@ struct RootView: View {
             SidebarView(selection: $selection, showingAdd: $showingAdd, showingScan: $showingScan)
                 .frame(width: Theme.sidebarWidth)
                 .background(Theme.sidebar)
+                .clipped()
 
             Rectangle().fill(Theme.stroke).frame(width: 1)
 
