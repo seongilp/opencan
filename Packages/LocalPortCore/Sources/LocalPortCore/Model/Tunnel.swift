@@ -1,0 +1,10 @@
+import Foundation
+
+public struct Upstream: Sendable, Hashable {
+    public let host: String
+    public let port: Int
+    public init(host: String, port: Int) {
+        self.host = host
+        self.port = port
+    }
+}
