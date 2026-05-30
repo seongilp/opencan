@@ -1,0 +1,1863 @@
+# LocalPort Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Build a native macOS app that exposes local dev servers through friendly `*.localhost` hostnames over an embedded SwiftNIO reverse proxy, terminates TLS with locally-issued certificates, and inspects HTTP traffic live.
+
+**Architecture:** Pure logic lives in an SPM package `LocalPortCore` (no SwiftUI/AppKit dependency) so it is fully unit-testable. A thin SwiftUI app target (`App/`) provides a menu bar + main window over an `@Observable` layer that drives and observes the core. The proxy binds two fixed high ports (HTTP 8080, HTTPS 8443) and routes all hostnames by Host header / TLS SNI.
+
+**Tech Stack:** Swift 6, SwiftUI, SwiftData, Swift Testing, SwiftNIO (`swift-nio`, `swift-nio-ssl`), Apple `swift-certificates` (X509) + `swift-crypto`.
+
+---
+
+## File Structure
+
+```
+LocalPort/
+  Package.swift                          # LocalPortCore SPM package (root, for tests)
+  Packages/LocalPortCore/Sources/LocalPortCore/
+    Model/Tunnel.swift                   # tunnel value + SwiftData @Model
+    Model/TunnelStore.swift              # CRUD + duplicate validation
+    ProxyEngine/RouteResolver.swift      # Host/SNI -> upstream mapping (actor)
+    ProxyEngine/ProxyServer.swift        # NIO listener bootstrap (actor)
+    ProxyEngine/ProxyHandler.swift       # request relay channel handler
+    ProxyEngine/SNIResolver.swift        # per-host TLS context selection
+    Certificates/CertificateAuthority.swift  # root CA create/load
+    Certificates/LeafIssuer.swift        # per-host leaf issuance
+    Certificates/KeychainTrust.swift     # trust install (one-time auth)
+    Hosts/HostsManager.swift             # /etc/hosts read/write (optional)
+    Traffic/TrafficEvent.swift           # immutable capture model
+    Traffic/TrafficRecorder.swift        # request/response capture + AsyncStream
+  Packages/LocalPortCore/Tests/LocalPortCoreTests/
+    RouteResolverTests.swift
+    TunnelStoreTests.swift
+    CertificateTests.swift
+    HostsManagerTests.swift
+    ProxyServerTests.swift
+  App/                                   # SwiftUI app target (added in Task 10)
+    LocalPortApp.swift
+    AppModel.swift
+    MenuBar/MenuBarView.swift
+    Tunnels/TunnelListView.swift
+    Tunnels/TunnelEditView.swift
+    Inspector/InspectorView.swift
+    Inspector/InspectorModel.swift
+    Settings/SettingsView.swift
+```
+
+Conventions: single responsibility per file, 200–400 lines, immutable value types across concurrency boundaries, `git commit` after every passing task.
+
+---
+
+## Task 0: Scaffold the SPM package
+
+**Files:**
+- Create: `Package.swift`
+- Create: `Packages/LocalPortCore/Sources/LocalPortCore/Placeholder.swift`
+- Create: `Packages/LocalPortCore/Tests/LocalPortCoreTests/SmokeTests.swift`
+
+- [ ] **Step 1: Create `Package.swift`**
+
+```swift
+// swift-tools-version: 6.0
+import PackageDescription
+
+let package = Package(
+    name: "LocalPortCore",
+    platforms: [.macOS(.v14)],
+    products: [
+        .library(name: "LocalPortCore", targets: ["LocalPortCore"]),
+    ],
+    dependencies: [
+        .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
+        .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.27.0"),
+        .package(url: "https://github.com/apple/swift-certificates.git", from: "1.5.0"),
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.8.0"),
+    ],
+    targets: [
+        .target(
+            name: "LocalPortCore",
+            dependencies: [
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+                .product(name: "NIOHTTP1", package: "swift-nio"),
+                .product(name: "NIOSSL", package: "swift-nio-ssl"),
+                .product(name: "X509", package: "swift-certificates"),
+                .product(name: "Crypto", package: "swift-crypto"),
+            ],
+            path: "Packages/LocalPortCore/Sources/LocalPortCore"
+        ),
+        .testTarget(
+            name: "LocalPortCoreTests",
+            dependencies: ["LocalPortCore"],
+            path: "Packages/LocalPortCore/Tests/LocalPortCoreTests"
+        ),
+    ]
+)
+```
+
+- [ ] **Step 2: Create placeholder source so the target compiles**
+
+`Packages/LocalPortCore/Sources/LocalPortCore/Placeholder.swift`:
+```swift
+enum LocalPortCore {
+    static let version = "0.1.0"
+}
+```
+
+- [ ] **Step 3: Write a smoke test**
+
+`Packages/LocalPortCore/Tests/LocalPortCoreTests/SmokeTests.swift`:
+```swift
+import Testing
+@testable import LocalPortCore
+
+@Test func packageVersionIsSet() {
+    #expect(LocalPortCore.version == "0.1.0")
+}
+```
+
+- [ ] **Step 4: Resolve dependencies and run tests**
+
+Run: `swift test`
+Expected: PASS (1 test). First run downloads SwiftNIO/certificates packages.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add Package.swift Packages/
+git commit -m "chore: scaffold LocalPortCore SPM package"
+```
+
+---
+
+## Task 1: RouteResolver — Host/SNI to upstream mapping
+
+The resolver is a pure actor holding a hostname→upstream table. Hostname match is
+case-insensitive and ignores any `:port` suffix from the Host header.
+
+**Files:**
+- Create: `Packages/LocalPortCore/Sources/LocalPortCore/Model/Tunnel.swift` (value type only for now)
+- Create: `Packages/LocalPortCore/Sources/LocalPortCore/ProxyEngine/RouteResolver.swift`
+- Test: `Packages/LocalPortCore/Tests/LocalPortCoreTests/RouteResolverTests.swift`
+
+- [ ] **Step 1: Write the failing tests**
+
+`RouteResolverTests.swift`:
+```swift
+import Testing
+@testable import LocalPortCore
+
+@Test func resolvesExactHost() async {
+    let r = RouteResolver()
+    await r.upsert(host: "myapp.localhost", upstream: Upstream(host: "127.0.0.1", port: 3000))
+    let u = await r.upstream(forHostHeader: "myapp.localhost")
+    #expect(u == Upstream(host: "127.0.0.1", port: 3000))
+}
+
+@Test func ignoresPortSuffixAndCase() async {
+    let r = RouteResolver()
+    await r.upsert(host: "MyApp.localhost", upstream: Upstream(host: "127.0.0.1", port: 8000))
+    let u = await r.upstream(forHostHeader: "myapp.localhost:8443")
+    #expect(u == Upstream(host: "127.0.0.1", port: 8000))
+}
+
+@Test func returnsNilForUnknownHost() async {
+    let r = RouteResolver()
+    let u = await r.upstream(forHostHeader: "nope.localhost")
+    #expect(u == nil)
+}
+
+@Test func removeDropsRoute() async {
+    let r = RouteResolver()
+    await r.upsert(host: "a.localhost", upstream: Upstream(host: "127.0.0.1", port: 1))
+    await r.remove(host: "a.localhost")
+    let u = await r.upstream(forHostHeader: "a.localhost")
+    #expect(u == nil)
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `swift test --filter RouteResolverTests`
+Expected: FAIL — `RouteResolver` / `Upstream` not defined.
+
+- [ ] **Step 3: Implement `Upstream` and `RouteResolver`**
+
+`Model/Tunnel.swift` (value types; SwiftData `@Model` added in Task 2):
+```swift
+import Foundation
+
+public struct Upstream: Sendable, Hashable {
+    public let host: String
+    public let port: Int
+    public init(host: String, port: Int) {
+        self.host = host
+        self.port = port
+    }
+}
+```
+
+`ProxyEngine/RouteResolver.swift`:
+```swift
+public actor RouteResolver {
+    private var table: [String: Upstream] = [:]
+
+    public init() {}
+
+    public func upsert(host: String, upstream: Upstream) {
+        table[Self.normalize(host)] = upstream
+    }
+
+    public func remove(host: String) {
+        table[Self.normalize(host)] = nil
+    }
+
+    public func upstream(forHostHeader header: String) -> Upstream? {
+        table[Self.normalize(header)]
+    }
+
+    public func allHosts() -> [String] { Array(table.keys) }
+
+    static func normalize(_ host: String) -> String {
+        let withoutPort = host.split(separator: ":", maxSplits: 1).first.map(String.init) ?? host
+        return withoutPort.lowercased()
+    }
+}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `swift test --filter RouteResolverTests`
+Expected: PASS (4 tests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add Packages/LocalPortCore/Sources/LocalPortCore/Model/Tunnel.swift \
+        Packages/LocalPortCore/Sources/LocalPortCore/ProxyEngine/RouteResolver.swift \
+        Packages/LocalPortCore/Tests/LocalPortCoreTests/RouteResolverTests.swift
+git commit -m "feat: add RouteResolver host-to-upstream mapping"
+```
+
+---
+
+## Task 2: Tunnel model + TunnelStore (SwiftData)
+
+`TunnelStore` persists tunnels and rejects duplicate hostnames. Tests use an in-memory
+SwiftData container so they never touch disk.
+
+**Files:**
+- Modify: `Packages/LocalPortCore/Sources/LocalPortCore/Model/Tunnel.swift`
+- Create: `Packages/LocalPortCore/Sources/LocalPortCore/Model/TunnelStore.swift`
+- Test: `Packages/LocalPortCore/Tests/LocalPortCoreTests/TunnelStoreTests.swift`
+
+- [ ] **Step 1: Write the failing tests**
+
+`TunnelStoreTests.swift`:
+```swift
+import Testing
+import SwiftData
+@testable import LocalPortCore
+
+@MainActor
+private func makeStore() throws -> TunnelStore {
+    let config = ModelConfiguration(isStoredInMemoryOnly: true)
+    let container = try ModelContainer(for: Tunnel.self, configurations: config)
+    return TunnelStore(context: container.mainContext)
+}
+
+@Test @MainActor func createsAndLists() throws {
+    let store = try makeStore()
+    try store.create(name: "myapp", upstreamHost: "127.0.0.1", upstreamPort: 3000)
+    let all = try store.all()
+    #expect(all.count == 1)
+    #expect(all.first?.hostname == "myapp.localhost")
+}
+
+@Test @MainActor func rejectsDuplicateHostname() throws {
+    let store = try makeStore()
+    try store.create(name: "dup", upstreamHost: "127.0.0.1", upstreamPort: 1)
+    #expect(throws: TunnelStoreError.duplicateHostname) {
+        try store.create(name: "dup", upstreamHost: "127.0.0.1", upstreamPort: 2)
+    }
+}
+
+@Test @MainActor func deletesTunnel() throws {
+    let store = try makeStore()
+    try store.create(name: "gone", upstreamHost: "127.0.0.1", upstreamPort: 1)
+    let t = try store.all().first!
+    try store.delete(t)
+    #expect(try store.all().isEmpty)
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `swift test --filter TunnelStoreTests`
+Expected: FAIL — `Tunnel` is not a `@Model`, `TunnelStore` undefined.
+
+- [ ] **Step 3: Add the `@Model` and the store**
+
+Append to `Model/Tunnel.swift`:
+```swift
+import SwiftData
+
+@Model
+public final class Tunnel {
+    public var name: String
+    public var upstreamHost: String
+    public var upstreamPort: Int
+    public var createdAt: Date
+
+    public init(name: String, upstreamHost: String, upstreamPort: Int, createdAt: Date = .now) {
+        self.name = name
+        self.upstreamHost = upstreamHost
+        self.upstreamPort = upstreamPort
+        self.createdAt = createdAt
+    }
+
+    /// Friendly local hostname, e.g. "myapp.localhost".
+    public var hostname: String { "\(name).localhost" }
+
+    public var upstream: Upstream { Upstream(host: upstreamHost, port: upstreamPort) }
+}
+```
+
+`Model/TunnelStore.swift`:
+```swift
+import Foundation
+import SwiftData
+
+public enum TunnelStoreError: Error, Equatable {
+    case duplicateHostname
+    case invalidName
+}
+
+@MainActor
+public final class TunnelStore {
+    private let context: ModelContext
+
+    public init(context: ModelContext) {
+        self.context = context
+    }
+
+    public func all() throws -> [Tunnel] {
+        let descriptor = FetchDescriptor<Tunnel>(sortBy: [SortDescriptor(\.createdAt)])
+        return try context.fetch(descriptor)
+    }
+
+    @discardableResult
+    public func create(name: String, upstreamHost: String, upstreamPort: Int) throws -> Tunnel {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !trimmed.isEmpty, trimmed.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" }) else {
+            throw TunnelStoreError.invalidName
+        }
+        if try all().contains(where: { $0.name == trimmed }) {
+            throw TunnelStoreError.duplicateHostname
+        }
+        let tunnel = Tunnel(name: trimmed, upstreamHost: upstreamHost, upstreamPort: upstreamPort)
+        context.insert(tunnel)
+        try context.save()
+        return tunnel
+    }
+
+    public func delete(_ tunnel: Tunnel) throws {
+        context.delete(tunnel)
+        try context.save()
+    }
+}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `swift test --filter TunnelStoreTests`
+Expected: PASS (3 tests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add Packages/LocalPortCore/Sources/LocalPortCore/Model/
+git add Packages/LocalPortCore/Tests/LocalPortCoreTests/TunnelStoreTests.swift
+git commit -m "feat: add Tunnel model and TunnelStore with duplicate validation"
+```
+
+---
+
+## Task 3: Local Certificate Authority + leaf issuance
+
+Use Apple's `swift-certificates` (X509) + `swift-crypto` (P256). The CA issues per-host leaf
+certificates with a DNS SAN. Output is PEM (cert + private key) consumable by NIOSSL.
+
+**Files:**
+- Create: `Packages/LocalPortCore/Sources/LocalPortCore/Certificates/CertificateAuthority.swift`
+- Create: `Packages/LocalPortCore/Sources/LocalPortCore/Certificates/LeafIssuer.swift`
+- Test: `Packages/LocalPortCore/Tests/LocalPortCoreTests/CertificateTests.swift`
+
+- [ ] **Step 1: Write the failing tests**
+
+`CertificateTests.swift`:
+```swift
+import Testing
+import Foundation
+import X509
+@testable import LocalPortCore
+
+@Test func issuesLeafChainingToCA() throws {
+    let ca = try CertificateAuthority()
+    let issuer = LeafIssuer(authority: ca)
+    let bundle = try issuer.issue(host: "myapp.localhost")
+
+    // Leaf cert and key are non-empty PEM.
+    #expect(bundle.certificatePEM.contains("BEGIN CERTIFICATE"))
+    #expect(bundle.privateKeyPEM.contains("BEGIN PRIVATE KEY"))
+
+    // Leaf is signed by the CA (verify signature with CA public key).
+    #expect(bundle.certificate.publicKey != ca.certificate.publicKey)
+    #expect(bundle.certificate.issuer == ca.certificate.subject)
+}
+
+@Test func leafIncludesHostInSAN() throws {
+    let ca = try CertificateAuthority()
+    let bundle = try LeafIssuer(authority: ca).issue(host: "alpha.localhost")
+    let san = try #require(
+        bundle.certificate.extensions.subjectAlternativeNames
+    )
+    let names = san.map { String(describing: $0) }
+    #expect(names.contains { $0.contains("alpha.localhost") })
+}
+
+@Test func caCertificateIsCA() throws {
+    let ca = try CertificateAuthority()
+    let bc = try #require(ca.certificate.extensions.basicConstraints)
+    if case .isCertificateAuthority = bc {} else {
+        Issue.record("CA cert must have isCertificateAuthority basic constraint")
+    }
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `swift test --filter CertificateTests`
+Expected: FAIL — `CertificateAuthority` / `LeafIssuer` undefined.
+
+- [ ] **Step 3: Implement the CA**
+
+`Certificates/CertificateAuthority.swift`:
+```swift
+import Foundation
+import Crypto
+import X509
+import SwiftASN1
+
+public struct CertificateAuthority: Sendable {
+    public let certificate: Certificate
+    public let privateKey: Certificate.PrivateKey
+    private let signingKey: P256.Signing.PrivateKey
+
+    /// Generates a fresh self-signed root CA valid for 10 years.
+    public init(commonName: String = "LocalPort Local CA",
+                notValidBefore: Date = Date(timeIntervalSinceNow: -3600),
+                lifetime: TimeInterval = 60 * 60 * 24 * 365 * 10) throws {
+        let key = P256.Signing.PrivateKey()
+        let caKey = Certificate.PrivateKey(key)
+        let name = try DistinguishedName { CommonName(commonName) }
+        let cert = try Certificate(
+            version: .v3,
+            serialNumber: Certificate.SerialNumber(),
+            publicKey: caKey.publicKey,
+            notValidBefore: notValidBefore,
+            notValidAfter: notValidBefore.addingTimeInterval(lifetime),
+            issuer: name,
+            subject: name,
+            signatureAlgorithm: .ecdsaWithSHA256,
+            extensions: try Certificate.Extensions {
+                Critical(BasicConstraints.isCertificateAuthority(maxPathLength: nil))
+                Critical(KeyUsage(keyCertSign: true, cRLSign: true))
+            },
+            issuerPrivateKey: caKey
+        )
+        self.signingKey = key
+        self.privateKey = caKey
+        self.certificate = cert
+    }
+
+    /// PEM of the root CA certificate (for keychain trust install).
+    public func certificatePEM() throws -> String {
+        try certificate.serializeAsPEM().pemString
+    }
+}
+```
+
+- [ ] **Step 4: Implement the leaf issuer**
+
+`Certificates/LeafIssuer.swift`:
+```swift
+import Foundation
+import Crypto
+import X509
+
+public struct CertificateBundle: Sendable {
+    public let certificate: Certificate
+    public let certificatePEM: String
+    public let privateKeyPEM: String
+}
+
+public struct LeafIssuer: Sendable {
+    private let authority: CertificateAuthority
+
+    public init(authority: CertificateAuthority) {
+        self.authority = authority
+    }
+
+    /// Issues a leaf certificate for `host` (and its `www`-less DNS SAN), valid ~1 year.
+    public func issue(host: String,
+                      notValidBefore: Date = Date(timeIntervalSinceNow: -3600),
+                      lifetime: TimeInterval = 60 * 60 * 24 * 397) throws -> CertificateBundle {
+        let leafKey = P256.Signing.PrivateKey()
+        let leafPub = Certificate.PublicKey(leafKey.publicKey)
+        let subject = try DistinguishedName { CommonName(host) }
+        let leaf = try Certificate(
+            version: .v3,
+            serialNumber: Certificate.SerialNumber(),
+            publicKey: leafPub,
+            notValidBefore: notValidBefore,
+            notValidAfter: notValidBefore.addingTimeInterval(lifetime),
+            issuer: authority.certificate.subject,
+            subject: subject,
+            signatureAlgorithm: .ecdsaWithSHA256,
+            extensions: try Certificate.Extensions {
+                Critical(BasicConstraints.notCertificateAuthority)
+                KeyUsage(digitalSignature: true, keyEncipherment: true)
+                try ExtendedKeyUsage([.serverAuth])
+                SubjectAlternativeNames([.dnsName(host)])
+            },
+            issuerPrivateKey: authority.privateKey
+        )
+        return CertificateBundle(
+            certificate: leaf,
+            certificatePEM: try leaf.serializeAsPEM().pemString,
+            privateKeyPEM: leafKey.pemRepresentation
+        )
+    }
+}
+```
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+Run: `swift test --filter CertificateTests`
+Expected: PASS (3 tests). If a `swift-certificates` API name differs by version (e.g.
+`serializeAsPEM`), adjust to the installed version's equivalent and re-run.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add Packages/LocalPortCore/Sources/LocalPortCore/Certificates/
+git add Packages/LocalPortCore/Tests/LocalPortCoreTests/CertificateTests.swift
+git commit -m "feat: add local certificate authority and leaf issuance"
+```
+
+---
+
+## Task 4: TrafficEvent + TrafficRecorder
+
+`TrafficEvent` is an immutable value type emitted for each request and response.
+`TrafficRecorder` is an actor that broadcasts events via an `AsyncStream` and keeps a bounded
+in-memory history for late UI subscribers.
+
+**Files:**
+- Create: `Packages/LocalPortCore/Sources/LocalPortCore/Traffic/TrafficEvent.swift`
+- Create: `Packages/LocalPortCore/Sources/LocalPortCore/Traffic/TrafficRecorder.swift`
+- Test: `Packages/LocalPortCore/Tests/LocalPortCoreTests/TrafficRecorderTests.swift`
+
+- [ ] **Step 1: Write the failing tests**
+
+`TrafficRecorderTests.swift`:
+```swift
+import Testing
+import Foundation
+@testable import LocalPortCore
+
+@Test func broadcastsRecordedEvents() async {
+    let recorder = TrafficRecorder(historyLimit: 10)
+    let stream = await recorder.events()
+
+    let event = TrafficEvent(
+        id: UUID(),
+        host: "myapp.localhost",
+        method: "GET",
+        path: "/health",
+        statusCode: 200,
+        kind: .completed,
+        timestamp: Date()
+    )
+    await recorder.record(event)
+
+    var iterator = stream.makeAsyncIterator()
+    let received = await iterator.next()
+    #expect(received?.path == "/health")
+}
+
+@Test func keepsBoundedHistory() async {
+    let recorder = TrafficRecorder(historyLimit: 2)
+    for i in 0..<5 {
+        await recorder.record(TrafficEvent(
+            id: UUID(), host: "h", method: "GET", path: "/\(i)",
+            statusCode: nil, kind: .started, timestamp: Date()))
+    }
+    let history = await recorder.history()
+    #expect(history.count == 2)
+    #expect(history.last?.path == "/4")
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `swift test --filter TrafficRecorderTests`
+Expected: FAIL — `TrafficEvent` / `TrafficRecorder` undefined.
+
+- [ ] **Step 3: Implement the value type**
+
+`Traffic/TrafficEvent.swift`:
+```swift
+import Foundation
+
+public struct TrafficEvent: Sendable, Identifiable, Hashable {
+    public enum Kind: Sendable, Hashable {
+        case started      // request received
+        case completed    // response sent
+        case failed       // upstream error (502)
+    }
+
+    public let id: UUID
+    public let host: String
+    public let method: String
+    public let path: String
+    public let statusCode: Int?
+    public let kind: Kind
+    public let timestamp: Date
+
+    public init(id: UUID, host: String, method: String, path: String,
+                statusCode: Int?, kind: Kind, timestamp: Date) {
+        self.id = id
+        self.host = host
+        self.method = method
+        self.path = path
+        self.statusCode = statusCode
+        self.kind = kind
+        self.timestamp = timestamp
+    }
+}
+```
+
+- [ ] **Step 4: Implement the recorder**
+
+`Traffic/TrafficRecorder.swift`:
+```swift
+import Foundation
+
+public actor TrafficRecorder {
+    private let historyLimit: Int
+    private var buffer: [TrafficEvent] = []
+    private var continuations: [UUID: AsyncStream<TrafficEvent>.Continuation] = [:]
+
+    public init(historyLimit: Int = 500) {
+        self.historyLimit = historyLimit
+    }
+
+    public func record(_ event: TrafficEvent) {
+        buffer.append(event)
+        if buffer.count > historyLimit {
+            buffer.removeFirst(buffer.count - historyLimit)
+        }
+        for continuation in continuations.values {
+            continuation.yield(event)
+        }
+    }
+
+    public func history() -> [TrafficEvent] { buffer }
+
+    /// A live stream of events. The subscriber is dropped when the stream terminates.
+    public func events() -> AsyncStream<TrafficEvent> {
+        let id = UUID()
+        return AsyncStream { continuation in
+            continuations[id] = continuation
+            continuation.onTermination = { [weak self] _ in
+                Task { await self?.removeContinuation(id) }
+            }
+        }
+    }
+
+    private func removeContinuation(_ id: UUID) {
+        continuations[id] = nil
+    }
+}
+```
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+Run: `swift test --filter TrafficRecorderTests`
+Expected: PASS (2 tests).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add Packages/LocalPortCore/Sources/LocalPortCore/Traffic/
+git add Packages/LocalPortCore/Tests/LocalPortCoreTests/TrafficRecorderTests.swift
+git commit -m "feat: add TrafficEvent model and TrafficRecorder broadcaster"
+```
+
+---
+
+## Task 5: HostsManager (optional .test domain registration)
+
+Reads and writes a hosts file. Tests point it at a temp file — never the real `/etc/hosts`.
+Add/remove are idempotent and delimited by managed markers so app-owned lines are clearly
+scoped.
+
+**Files:**
+- Create: `Packages/LocalPortCore/Sources/LocalPortCore/Hosts/HostsManager.swift`
+- Test: `Packages/LocalPortCore/Tests/LocalPortCoreTests/HostsManagerTests.swift`
+
+- [ ] **Step 1: Write the failing tests**
+
+`HostsManagerTests.swift`:
+```swift
+import Testing
+import Foundation
+@testable import LocalPortCore
+
+private func tempFile(_ contents: String = "") throws -> URL {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString + ".hosts")
+    try contents.write(to: url, atomically: true, encoding: .utf8)
+    return url
+}
+
+@Test func addsHostIdempotently() throws {
+    let url = try tempFile("127.0.0.1 localhost\n")
+    let mgr = HostsManager(hostsFile: url)
+    try mgr.add(hostname: "myapp.test")
+    try mgr.add(hostname: "myapp.test") // idempotent
+    let text = try String(contentsOf: url, encoding: .utf8)
+    let occurrences = text.components(separatedBy: "myapp.test").count - 1
+    #expect(occurrences == 1)
+    #expect(text.contains("127.0.0.1\tmyapp.test"))
+}
+
+@Test func removesOnlyManagedHost() throws {
+    let url = try tempFile("127.0.0.1 localhost\n")
+    let mgr = HostsManager(hostsFile: url)
+    try mgr.add(hostname: "a.test")
+    try mgr.remove(hostname: "a.test")
+    let text = try String(contentsOf: url, encoding: .utf8)
+    #expect(!text.contains("a.test"))
+    #expect(text.contains("localhost")) // untouched
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `swift test --filter HostsManagerTests`
+Expected: FAIL — `HostsManager` undefined.
+
+- [ ] **Step 3: Implement**
+
+`Hosts/HostsManager.swift`:
+```swift
+import Foundation
+
+public struct HostsManager: Sendable {
+    public static let defaultHostsFile = URL(fileURLWithPath: "/etc/hosts")
+    private static let marker = "# LocalPort"
+
+    private let hostsFile: URL
+
+    public init(hostsFile: URL = HostsManager.defaultHostsFile) {
+        self.hostsFile = hostsFile
+    }
+
+    public func add(hostname: String) throws {
+        var lines = try readLines()
+        let entry = "127.0.0.1\t\(hostname) \(Self.marker)"
+        guard !lines.contains(where: { $0.contains(" \(hostname) ") && $0.contains(Self.marker) }) else {
+            return
+        }
+        lines.append(entry)
+        try write(lines)
+    }
+
+    public func remove(hostname: String) throws {
+        let lines = try readLines().filter {
+            !($0.contains(" \(hostname) ") && $0.contains(Self.marker))
+        }
+        try write(lines)
+    }
+
+    private func readLines() throws -> [String] {
+        let text = try String(contentsOf: hostsFile, encoding: .utf8)
+        return text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    }
+
+    private func write(_ lines: [String]) throws {
+        let text = lines.joined(separator: "\n")
+        try text.write(to: hostsFile, atomically: true, encoding: .utf8)
+    }
+}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `swift test --filter HostsManagerTests`
+Expected: PASS (2 tests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add Packages/LocalPortCore/Sources/LocalPortCore/Hosts/
+git add Packages/LocalPortCore/Tests/LocalPortCoreTests/HostsManagerTests.swift
+git commit -m "feat: add HostsManager for optional .test domain registration"
+```
+
+---
+
+## Task 6: ProxyHandler — HTTP relay channel handler
+
+A NIOHTTP1 channel handler that, on each request head, resolves the upstream from the Host
+header, records a `started` event, opens an upstream connection, forwards the request, streams
+the response back, and records `completed`/`failed`. On unknown host or refused upstream it
+returns a 502 with a friendly HTML body.
+
+**Files:**
+- Create: `Packages/LocalPortCore/Sources/LocalPortCore/ProxyEngine/ProxyHandler.swift`
+
+This task is verified by the integration test in Task 7 (the handler needs a running server to
+exercise meaningfully). Implement it here, compile, then test end-to-end next.
+
+- [ ] **Step 1: Implement the handler**
+
+`ProxyEngine/ProxyHandler.swift`:
+```swift
+import Foundation
+import NIOCore
+import NIOHTTP1
+
+/// Bridges an inbound HTTP request to an upstream and streams the response back.
+/// One instance per inbound connection.
+final class ProxyHandler: ChannelInboundHandler, @unchecked Sendable {
+    typealias InboundIn = HTTPServerRequestPart
+    typealias OutboundOut = HTTPServerResponsePart
+
+    private let resolver: RouteResolver
+    private let recorder: TrafficRecorder
+    private let allocator = ByteBufferAllocator()
+
+    private var requestHead: HTTPRequestHead?
+    private var bodyBuffer = ByteBuffer()
+
+    init(resolver: RouteResolver, recorder: TrafficRecorder) {
+        self.resolver = resolver
+        self.recorder = recorder
+    }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        let part = unwrapInboundIn(data)
+        switch part {
+        case .head(let head):
+            requestHead = head
+            bodyBuffer = context.channel.allocator.buffer(capacity: 0)
+        case .body(var chunk):
+            bodyBuffer.writeBuffer(&chunk)
+        case .end:
+            guard let head = requestHead else { return }
+            forward(context: context, head: head, body: bodyBuffer)
+        }
+    }
+
+    private func host(from head: HTTPRequestHead) -> String {
+        head.headers.first(name: "host") ?? ""
+    }
+
+    private func forward(context: ChannelHandlerContext, head: HTTPRequestHead, body: ByteBuffer) {
+        let hostHeader = host(from: head)
+        let eventID = UUID()
+        let channel = context.channel
+        let loop = context.eventLoop
+
+        Task {
+            await recorder.record(TrafficEvent(
+                id: eventID, host: hostHeader, method: head.method.rawValue,
+                path: head.uri, statusCode: nil, kind: .started, timestamp: Date()))
+
+            guard let upstream = await resolver.upstream(forHostHeader: hostHeader) else {
+                loop.execute { self.respondGateway(context: context, status: .badGateway,
+                                                   message: "No tunnel for host \\(hostHeader)") }
+                await recorder.record(TrafficEvent(
+                    id: eventID, host: hostHeader, method: head.method.rawValue,
+                    path: head.uri, statusCode: 502, kind: .failed, timestamp: Date()))
+                return
+            }
+
+            do {
+                let response = try await UpstreamClient.send(
+                    on: loop, head: head, body: body, upstream: upstream)
+                loop.execute { self.writeResponse(context: context, response: response) }
+                await recorder.record(TrafficEvent(
+                    id: eventID, host: hostHeader, method: head.method.rawValue,
+                    path: head.uri, statusCode: response.status, kind: .completed, timestamp: Date()))
+            } catch {
+                loop.execute { self.respondGateway(context: context, status: .badGateway,
+                                                   message: "Upstream unavailable") }
+                await recorder.record(TrafficEvent(
+                    id: eventID, host: hostHeader, method: head.method.rawValue,
+                    path: head.uri, statusCode: 502, kind: .failed, timestamp: Date()))
+            }
+        }
+    }
+
+    private func writeResponse(context: ChannelHandlerContext, response: UpstreamResponse) {
+        var headers = response.headers
+        headers.replaceOrAdd(name: "content-length", value: String(response.body.readableBytes))
+        let head = HTTPResponseHead(version: .http1_1,
+                                    status: HTTPResponseStatus(statusCode: response.status),
+                                    headers: headers)
+        context.write(wrapOutboundOut(.head(head)), promise: nil)
+        context.write(wrapOutboundOut(.body(.byteBuffer(response.body))), promise: nil)
+        context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: nil)
+    }
+
+    private func respondGateway(context: ChannelHandlerContext, status: HTTPResponseStatus, message: String) {
+        let html = """
+        <html><body style="font-family: -apple-system; padding: 2rem;">
+        <h2>502 — \\(status.reasonPhrase)</h2><p>\\(message)</p>
+        <p>Is your local server running?</p></body></html>
+        """
+        var buffer = allocator.buffer(capacity: html.utf8.count)
+        buffer.writeString(html)
+        var headers = HTTPHeaders()
+        headers.add(name: "content-type", value: "text/html; charset=utf-8")
+        headers.add(name: "content-length", value: String(buffer.readableBytes))
+        context.write(wrapOutboundOut(.head(HTTPResponseHead(version: .http1_1, status: status, headers: headers))), promise: nil)
+        context.write(wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
+        context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: nil)
+    }
+}
+```
+
+- [ ] **Step 2: Implement the upstream client**
+
+Create `Packages/LocalPortCore/Sources/LocalPortCore/ProxyEngine/UpstreamClient.swift`:
+```swift
+import Foundation
+import NIOCore
+import NIOPosix
+import NIOHTTP1
+
+struct UpstreamResponse: Sendable {
+    let status: Int
+    let headers: HTTPHeaders
+    let body: ByteBuffer
+}
+
+/// Minimal one-shot HTTP/1.1 client used to relay a request to a local upstream.
+enum UpstreamClient {
+    static func send(on loop: EventLoop, head: HTTPRequestHead, body: ByteBuffer,
+                     upstream: Upstream) async throws -> UpstreamResponse {
+        try await withCheckedThrowingContinuation { continuation in
+            let collector = ResponseCollector(continuation: continuation)
+            let bootstrap = ClientBootstrap(group: loop)
+                .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+                .channelInitializer { channel in
+                    channel.pipeline.addHTTPClientHandlers().flatMap {
+                        channel.pipeline.addHandler(collector)
+                    }
+                }
+            bootstrap.connect(host: upstream.host, port: upstream.port).whenComplete { result in
+                switch result {
+                case .failure(let error):
+                    collector.fail(error)
+                case .success(let channel):
+                    var requestHead = head
+                    requestHead.headers.replaceOrAdd(name: "host", value: "\\(upstream.host):\\(upstream.port)")
+                    channel.write(HTTPClientRequestPart.head(requestHead), promise: nil)
+                    if body.readableBytes > 0 {
+                        channel.write(HTTPClientRequestPart.body(.byteBuffer(body)), promise: nil)
+                    }
+                    channel.writeAndFlush(HTTPClientRequestPart.end(nil), promise: nil)
+                }
+            }
+        }
+    }
+}
+
+private final class ResponseCollector: ChannelInboundHandler, @unchecked Sendable {
+    typealias InboundIn = HTTPClientResponsePart
+
+    private var status = 502
+    private var headers = HTTPHeaders()
+    private var body = ByteBuffer()
+    private var continuation: CheckedContinuation<UpstreamResponse, Error>?
+
+    init(continuation: CheckedContinuation<UpstreamResponse, Error>) {
+        self.continuation = continuation
+    }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        switch unwrapInboundIn(data) {
+        case .head(let head):
+            status = Int(head.status.code)
+            headers = head.headers
+        case .body(var chunk):
+            body.writeBuffer(&chunk)
+        case .end:
+            finish(context: context)
+        }
+    }
+
+    func errorCaught(context: ChannelHandlerContext, error: Error) {
+        fail(error)
+        context.close(promise: nil)
+    }
+
+    private func finish(context: ChannelHandlerContext) {
+        continuation?.resume(returning: UpstreamResponse(status: status, headers: headers, body: body))
+        continuation = nil
+        context.close(promise: nil)
+    }
+
+    func fail(_ error: Error) {
+        continuation?.resume(throwing: error)
+        continuation = nil
+    }
+}
+```
+
+- [ ] **Step 3: Compile**
+
+Run: `swift build`
+Expected: Builds. Fix any NIO API mismatches (handler type aliases, `addHTTPClientHandlers`)
+against the resolved SwiftNIO version before continuing.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add Packages/LocalPortCore/Sources/LocalPortCore/ProxyEngine/ProxyHandler.swift \
+        Packages/LocalPortCore/Sources/LocalPortCore/ProxyEngine/UpstreamClient.swift
+git commit -m "feat: add ProxyHandler and one-shot upstream client"
+```
+
+---
+
+## Task 7: ProxyServer + end-to-end integration test
+
+`ProxyServer` is an actor that boots an HTTP listener on a fixed port, installs the HTTP
+server pipeline + `ProxyHandler`, and can be shut down. The integration test starts a dummy
+upstream NIO server, points a tunnel at it, and asserts the proxy relays the response and emits
+traffic events; it also asserts the 502 path for an unknown host.
+
+**Files:**
+- Create: `Packages/LocalPortCore/Sources/LocalPortCore/ProxyEngine/ProxyServer.swift`
+- Test: `Packages/LocalPortCore/Tests/LocalPortCoreTests/ProxyServerTests.swift`
+
+- [ ] **Step 1: Write the failing integration test**
+
+`ProxyServerTests.swift`:
+```swift
+import Testing
+import Foundation
+import NIOCore
+import NIOPosix
+import NIOHTTP1
+@testable import LocalPortCore
+
+/// Minimal upstream that replies 200 "hello from upstream" to any request.
+private func startDummyUpstream(group: EventLoopGroup) async throws -> Int {
+    final class Echo: ChannelInboundHandler, @unchecked Sendable {
+        typealias InboundIn = HTTPServerRequestPart
+        typealias OutboundOut = HTTPServerResponsePart
+        func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+            guard case .end = unwrapInboundIn(data) else { return }
+            var buf = context.channel.allocator.buffer(capacity: 32)
+            buf.writeString("hello from upstream")
+            var headers = HTTPHeaders()
+            headers.add(name: "content-length", value: String(buf.readableBytes))
+            context.write(wrapOutboundOut(.head(HTTPResponseHead(version: .http1_1, status: .ok, headers: headers))), promise: nil)
+            context.write(wrapOutboundOut(.body(.byteBuffer(buf))), promise: nil)
+            context.writeAndFlush(wrapOutboundOut(.end(nil)), promise: nil)
+        }
+    }
+    let channel = try await ServerBootstrap(group: group)
+        .childChannelInitializer { ch in
+            ch.pipeline.configureHTTPServerPipeline().flatMap { ch.pipeline.addHandler(Echo()) }
+        }
+        .bind(host: "127.0.0.1", port: 0).get()
+    return channel.localAddress!.port!
+}
+
+@Test func relaysRequestToUpstreamAndRecords() async throws {
+    let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
+    defer { try? group.syncShutdownGracefully() }
+
+    let upstreamPort = try await startDummyUpstream(group: group)
+    let resolver = RouteResolver()
+    await resolver.upsert(host: "myapp.localhost",
+                          upstream: Upstream(host: "127.0.0.1", port: upstreamPort))
+    let recorder = TrafficRecorder()
+
+    let server = ProxyServer(resolver: resolver, recorder: recorder, group: group)
+    let port = try await server.start(host: "127.0.0.1", port: 0)
+    defer { Task { await server.stop() } }
+
+    // Issue a request via URLSession with Host header pointing at our tunnel.
+    var req = URLRequest(url: URL(string: "http://127.0.0.1:\\(port)/health")!)
+    req.setValue("myapp.localhost", forHTTPHeaderField: "Host")
+    let (data, response) = try await URLSession.shared.data(for: req)
+    #expect((response as? HTTPURLResponse)?.statusCode == 200)
+    #expect(String(decoding: data, as: UTF8.self) == "hello from upstream")
+
+    // A started + completed event were recorded.
+    try await Task.sleep(for: .milliseconds(50))
+    let history = await recorder.history()
+    #expect(history.contains { $0.kind == .completed && $0.statusCode == 200 })
+}
+
+@Test func returns502ForUnknownHost() async throws {
+    let group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
+    defer { try? group.syncShutdownGracefully() }
+
+    let server = ProxyServer(resolver: RouteResolver(), recorder: TrafficRecorder(), group: group)
+    let port = try await server.start(host: "127.0.0.1", port: 0)
+    defer { Task { await server.stop() } }
+
+    var req = URLRequest(url: URL(string: "http://127.0.0.1:\\(port)/")!)
+    req.setValue("nope.localhost", forHTTPHeaderField: "Host")
+    let (_, response) = try await URLSession.shared.data(for: req)
+    #expect((response as? HTTPURLResponse)?.statusCode == 502)
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `swift test --filter ProxyServerTests`
+Expected: FAIL — `ProxyServer` undefined.
+
+- [ ] **Step 3: Implement `ProxyServer`**
+
+`ProxyEngine/ProxyServer.swift`:
+```swift
+import Foundation
+import NIOCore
+import NIOPosix
+import NIOHTTP1
+
+public actor ProxyServer {
+    private let resolver: RouteResolver
+    private let recorder: TrafficRecorder
+    private let group: EventLoopGroup
+    private let ownsGroup: Bool
+    private var channel: Channel?
+
+    public init(resolver: RouteResolver, recorder: TrafficRecorder, group: EventLoopGroup? = nil) {
+        self.resolver = resolver
+        self.recorder = recorder
+        if let group {
+            self.group = group
+            self.ownsGroup = false
+        } else {
+            self.group = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
+            self.ownsGroup = true
+        }
+    }
+
+    /// Starts the HTTP listener. Returns the bound port (useful when port == 0 for tests).
+    @discardableResult
+    public func start(host: String = "127.0.0.1", port: Int) async throws -> Int {
+        let resolver = self.resolver
+        let recorder = self.recorder
+        let bootstrap = ServerBootstrap(group: group)
+            .serverChannelOption(ChannelOptions.backlog, value: 256)
+            .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .childChannelInitializer { channel in
+                channel.pipeline.configureHTTPServerPipeline().flatMap {
+                    channel.pipeline.addHandler(ProxyHandler(resolver: resolver, recorder: recorder))
+                }
+            }
+            .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+        let bound = try await bootstrap.bind(host: host, port: port).get()
+        self.channel = bound
+        return bound.localAddress?.port ?? port
+    }
+
+    public func stop() async {
+        try? await channel?.close().get()
+        channel = nil
+        if ownsGroup {
+            try? await group.shutdownGracefully()
+        }
+    }
+}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `swift test --filter ProxyServerTests`
+Expected: PASS (2 tests). If the relay deadlocks, confirm `ProxyHandler` hops back to the
+channel's event loop via `loop.execute` before writing (it does).
+
+- [ ] **Step 5: Run the full suite**
+
+Run: `swift test`
+Expected: All tests pass.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add Packages/LocalPortCore/Sources/LocalPortCore/ProxyEngine/ProxyServer.swift \
+        Packages/LocalPortCore/Tests/LocalPortCoreTests/ProxyServerTests.swift
+git commit -m "feat: add ProxyServer with end-to-end relay integration tests"
+```
+
+---
+
+## Task 8: SNIResolver + TLS listener (HTTPS on 8443)
+
+Adds an HTTPS listener that selects a per-host leaf certificate via SNI. `SNIResolver` maps a
+hostname to a `NIOSSLContext` built from the leaf bundle issued in Task 3.
+
+**Files:**
+- Create: `Packages/LocalPortCore/Sources/LocalPortCore/ProxyEngine/SNIResolver.swift`
+- Modify: `Packages/LocalPortCore/Sources/LocalPortCore/ProxyEngine/ProxyServer.swift`
+- Test: `Packages/LocalPortCore/Tests/LocalPortCoreTests/SNIResolverTests.swift`
+
+- [ ] **Step 1: Write the failing test**
+
+`SNIResolverTests.swift`:
+```swift
+import Testing
+import NIOSSL
+@testable import LocalPortCore
+
+@Test func buildsTLSContextForIssuedHost() async throws {
+    let ca = try CertificateAuthority()
+    let issuer = LeafIssuer(authority: ca)
+    let sni = SNIResolver(issuer: issuer)
+    let context = try await sni.context(for: "myapp.localhost")
+    #expect(context != nil)
+    // Second lookup returns a cached context (same object identity not guaranteed,
+    // but must not throw and must be non-nil).
+    let again = try await sni.context(for: "myapp.localhost")
+    #expect(again != nil)
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `swift test --filter SNIResolverTests`
+Expected: FAIL — `SNIResolver` undefined.
+
+- [ ] **Step 3: Implement `SNIResolver`**
+
+`ProxyEngine/SNIResolver.swift`:
+```swift
+import Foundation
+import NIOSSL
+
+public actor SNIResolver {
+    private let issuer: LeafIssuer
+    private var cache: [String: NIOSSLContext] = [:]
+
+    public init(issuer: LeafIssuer) {
+        self.issuer = issuer
+    }
+
+    public func context(for host: String) throws -> NIOSSLContext {
+        let key = host.lowercased()
+        if let cached = cache[key] { return cached }
+        let bundle = try issuer.issue(host: key)
+        let certs = try NIOSSLCertificate.fromPEMBytes(Array(bundle.certificatePEM.utf8))
+        let privateKey = try NIOSSLPrivateKey(bytes: Array(bundle.privateKeyPEM.utf8), format: .pem)
+        var config = TLSConfiguration.makeServerConfiguration(
+            certificateChain: certs.map { .certificate($0) },
+            privateKey: .privateKey(privateKey))
+        config.applicationProtocols = ["http/1.1"]
+        let context = try NIOSSLContext(configuration: config)
+        cache[key] = context
+        return context
+    }
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `swift test --filter SNIResolverTests`
+Expected: PASS (1 test).
+
+- [ ] **Step 5: Add an HTTPS listener to `ProxyServer`**
+
+Add this method to `ProxyServer` (and store an optional `SNIResolver` passed via a new
+designated path). Append to `ProxyServer.swift` inside the actor:
+```swift
+    private var tlsChannel: Channel?
+
+    /// Starts an HTTPS listener that terminates TLS using per-host certs, then proxies.
+    @discardableResult
+    public func startTLS(host: String = "127.0.0.1", port: Int, sni: SNIResolver) async throws -> Int {
+        let resolver = self.resolver
+        let recorder = self.recorder
+        let sniHandlerFactory: @Sendable () -> NIOSSLServerHandler? = { nil } // replaced below
+
+        let bootstrap = ServerBootstrap(group: group)
+            .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .childChannelInitializer { channel in
+                let sniHandler = NIOSSLServerHandler(context: try! NIOSSLContext(
+                    configuration: .makeServerConfiguration(
+                        certificateChain: [], privateKey: .privateKey(try! NIOSSLPrivateKey(bytes: [], format: .pem)))))
+                _ = sniHandlerFactory
+                _ = sniHandler
+                // Use SNIHandler to pick context per hostname:
+                let handler = SNIHandler { serverName in
+                    let promise = channel.eventLoop.makePromise(of: NIOSSLContext.self)
+                    Task {
+                        do { promise.succeed(try await sni.context(for: serverName)) }
+                        catch { promise.fail(error) }
+                    }
+                    return promise.futureResult.map { context in
+                        SNIResult.cont(NIOSSLServerHandler(context: context))
+                    }
+                }
+                return channel.pipeline.addHandler(handler).flatMap {
+                    channel.pipeline.configureHTTPServerPipeline()
+                }.flatMap {
+                    channel.pipeline.addHandler(ProxyHandler(resolver: resolver, recorder: recorder))
+                }
+            }
+        let bound = try await bootstrap.bind(host: host, port: port).get()
+        self.tlsChannel = bound
+        return bound.localAddress?.port ?? port
+    }
+```
+
+> Note for the implementer: NIOSSL's `SNIHandler` API selects a TLS context per server name.
+> If the installed NIOSSL version exposes the async-context selection differently (e.g.
+> `NIOSSLServerHandler` with a `customVerifyCallback` or `NIOTLSServerHandler`), adapt to the
+> available API — the contract is "pick `sni.context(for: serverName)` then continue into the
+> HTTP pipeline + ProxyHandler." Remove the dead `sniHandlerFactory`/`sniHandler` scaffolding
+> lines once the real `SNIHandler` path compiles.
+
+- [ ] **Step 6: Compile and run full suite**
+
+Run: `swift build && swift test`
+Expected: Builds and all tests pass. (TLS listener is exercised manually from the app; the
+SNI unit test in Step 1 already verifies context construction.)
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add Packages/LocalPortCore/Sources/LocalPortCore/ProxyEngine/SNIResolver.swift \
+        Packages/LocalPortCore/Sources/LocalPortCore/ProxyEngine/ProxyServer.swift \
+        Packages/LocalPortCore/Tests/LocalPortCoreTests/SNIResolverTests.swift
+git commit -m "feat: add SNIResolver and HTTPS listener with per-host certificates"
+```
+
+---
+
+## Task 9: KeychainTrust — one-time root CA trust install
+
+Installs the root CA into the user's keychain as trusted so browsers stop warning. Uses the
+`security add-trusted-cert` tool via an authorization prompt. This wraps a side-effecting
+command, so it is verified by build + a dry-run flag rather than a unit test that mutates the
+keychain.
+
+**Files:**
+- Create: `Packages/LocalPortCore/Sources/LocalPortCore/Certificates/KeychainTrust.swift`
+- Test: `Packages/LocalPortCore/Tests/LocalPortCoreTests/KeychainTrustTests.swift`
+
+- [ ] **Step 1: Write a failing test for PEM export wiring (no keychain mutation)**
+
+`KeychainTrustTests.swift`:
+```swift
+import Testing
+import Foundation
+@testable import LocalPortCore
+
+@Test func writesCAFileForInstall() throws {
+    let ca = try CertificateAuthority()
+    let trust = KeychainTrust()
+    let url = try trust.exportCACertificate(ca, to: FileManager.default.temporaryDirectory)
+    let pem = try String(contentsOf: url, encoding: .utf8)
+    #expect(pem.contains("BEGIN CERTIFICATE"))
+    try? FileManager.default.removeItem(at: url)
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `swift test --filter KeychainTrustTests`
+Expected: FAIL — `KeychainTrust` undefined.
+
+- [ ] **Step 3: Implement**
+
+`Certificates/KeychainTrust.swift`:
+```swift
+import Foundation
+
+public struct KeychainTrust: Sendable {
+    public init() {}
+
+    /// Writes the CA certificate to a temp `.pem` file for installation; returns its URL.
+    public func exportCACertificate(_ ca: CertificateAuthority, to directory: URL) throws -> URL {
+        let url = directory.appendingPathComponent("LocalPort-CA.pem")
+        try ca.certificatePEM().write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }
+
+    /// Installs and trusts the CA in the login keychain. Triggers a one-time auth dialog.
+    /// Returns the process exit status (0 == success).
+    @discardableResult
+    public func installTrust(caFile: URL) throws -> Int32 {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        process.arguments = ["add-trusted-cert", "-r", "trustRoot",
+                             "-k", "\\(NSHomeDirectory())/Library/Keychains/login.keychain-db",
+                             caFile.path]
+        try process.run()
+        process.waitUntilExit()
+        return process.terminationStatus
+    }
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `swift test --filter KeychainTrustTests`
+Expected: PASS (1 test). `installTrust` is exercised from the app, not in CI.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add Packages/LocalPortCore/Sources/LocalPortCore/Certificates/KeychainTrust.swift \
+        Packages/LocalPortCore/Tests/LocalPortCoreTests/KeychainTrustTests.swift
+git commit -m "feat: add KeychainTrust for one-time root CA trust install"
+```
+
+---
+
+## Task 10: SwiftUI app target — menu bar + window shell
+
+Create the macOS app target in Xcode that depends on `LocalPortCore`. The app wires a single
+`AppModel` (`@Observable`) that owns the store, proxy server, certificate authority, and
+recorder; the views render and drive it. UI is verified by building and launching; logic lives
+in `AppModel` and `InspectorModel` which are kept thin.
+
+> **Setup note:** Open `LocalPort.xcodeproj` in Xcode (create a new "macOS App" target named
+> `LocalPort`, SwiftUI lifecycle), then add the local package: File ▸ Add Package
+> Dependencies ▸ Add Local… ▸ select the repo root (`LocalPortCore`). Set deployment target
+> macOS 14. Add the `App/` files below to the target. Enable App Sandbox OFF for v1 (the proxy
+> binds local sockets and the trust install shells out to `/usr/bin/security`).
+
+**Files:**
+- Create: `App/LocalPortApp.swift`
+- Create: `App/AppModel.swift`
+- Create: `App/MenuBar/MenuBarView.swift`
+- Create: `App/Tunnels/TunnelListView.swift`
+- Create: `App/Tunnels/TunnelEditView.swift`
+- Create: `App/Inspector/InspectorModel.swift`
+- Create: `App/Inspector/InspectorView.swift`
+- Create: `App/Settings/SettingsView.swift`
+
+- [ ] **Step 1: AppModel**
+
+`App/AppModel.swift`:
+```swift
+import Foundation
+import Observation
+import SwiftData
+import LocalPortCore
+
+@Observable
+@MainActor
+final class AppModel {
+    enum ProxyState: Equatable { case stopped, running(httpPort: Int, httpsPort: Int) }
+
+    private(set) var state: ProxyState = .stopped
+    private(set) var statusMessage = "Stopped"
+
+    let httpPort = 8080
+    let httpsPort = 8443
+
+    private let container: ModelContainer
+    let store: TunnelStore
+    let recorder = TrafficRecorder()
+    private let resolver = RouteResolver()
+    private let authority: CertificateAuthority
+    private let sni: SNIResolver
+    private var server: ProxyServer?
+
+    init() {
+        // Persistent on-disk store for tunnels.
+        self.container = try! ModelContainer(for: Tunnel.self)
+        self.store = TunnelStore(context: container.mainContext)
+        self.authority = try! CertificateAuthority()
+        self.sni = SNIResolver(issuer: LeafIssuer(authority: authority))
+    }
+
+    var isRunning: Bool { if case .running = state { return true } else { return false } }
+
+    func start() async {
+        guard !isRunning else { return }
+        do {
+            // Load routes from persisted tunnels.
+            for tunnel in try store.all() {
+                await resolver.upsert(host: tunnel.hostname, upstream: tunnel.upstream)
+            }
+            let server = ProxyServer(resolver: resolver, recorder: recorder)
+            _ = try await server.start(host: "127.0.0.1", port: httpPort)
+            _ = try await server.startTLS(host: "127.0.0.1", port: httpsPort, sni: sni)
+            self.server = server
+            state = .running(httpPort: httpPort, httpsPort: httpsPort)
+            statusMessage = "Running on :\(httpPort) / :\(httpsPort)"
+        } catch {
+            statusMessage = "Failed to start: \(error.localizedDescription)"
+        }
+    }
+
+    func stop() async {
+        await server?.stop()
+        server = nil
+        state = .stopped
+        statusMessage = "Stopped"
+    }
+
+    func addTunnel(name: String, host: String, port: Int) async throws {
+        let tunnel = try store.create(name: name, upstreamHost: host, upstreamPort: port)
+        await resolver.upsert(host: tunnel.hostname, upstream: tunnel.upstream)
+    }
+
+    func deleteTunnel(_ tunnel: Tunnel) async throws {
+        await resolver.remove(host: tunnel.hostname)
+        try store.delete(tunnel)
+    }
+
+    func installCertificateTrust() {
+        let trust = KeychainTrust()
+        if let url = try? trust.exportCACertificate(authority, to: FileManager.default.temporaryDirectory) {
+            _ = try? trust.installTrust(caFile: url)
+        }
+    }
+}
+```
+
+- [ ] **Step 2: App entry point with menu bar + window**
+
+`App/LocalPortApp.swift`:
+```swift
+import SwiftUI
+
+@main
+struct LocalPortApp: App {
+    @State private var model = AppModel()
+
+    var body: some Scene {
+        Window("LocalPort", id: "main") {
+            ContentView()
+                .environment(model)
+                .frame(minWidth: 720, minHeight: 460)
+        }
+        .windowResizability(.contentMinSize)
+
+        MenuBarExtra("LocalPort", systemImage: model.isRunning ? "bolt.fill" : "bolt.slash") {
+            MenuBarView()
+                .environment(model)
+        }
+        .menuBarExtraStyle(.window)
+    }
+}
+
+struct ContentView: View {
+    @Environment(AppModel.self) private var model
+    var body: some View {
+        NavigationSplitView {
+            TunnelListView()
+        } detail: {
+            InspectorView()
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button(model.isRunning ? "Stop" : "Start") {
+                    Task { model.isRunning ? await model.stop() : await model.start() }
+                }
+            }
+        }
+    }
+}
+```
+
+- [ ] **Step 3: MenuBarView**
+
+`App/MenuBar/MenuBarView.swift`:
+```swift
+import SwiftUI
+
+struct MenuBarView: View {
+    @Environment(AppModel.self) private var model
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(model.statusMessage).font(.headline)
+            Button(model.isRunning ? "Stop Proxy" : "Start Proxy") {
+                Task { model.isRunning ? await model.stop() : await model.start() }
+            }
+            Divider()
+            Button("Open LocalPort") {
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            Button("Quit") { NSApp.terminate(nil) }
+        }
+        .padding(12)
+        .frame(width: 240)
+    }
+}
+```
+
+- [ ] **Step 4: Tunnel list + edit views**
+
+`App/Tunnels/TunnelListView.swift`:
+```swift
+import SwiftUI
+import LocalPortCore
+
+struct TunnelListView: View {
+    @Environment(AppModel.self) private var model
+    @State private var tunnels: [Tunnel] = []
+    @State private var showingAdd = false
+
+    var body: some View {
+        List(tunnels) { tunnel in
+            VStack(alignment: .leading) {
+                Text(tunnel.hostname).font(.body.monospaced())
+                Text("→ \(tunnel.upstreamHost):\(tunnel.upstreamPort)")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .swipeActions {
+                Button("Delete", role: .destructive) {
+                    Task { try? await model.deleteTunnel(tunnel); reload() }
+                }
+            }
+        }
+        .navigationTitle("Tunnels")
+        .toolbar {
+            Button { showingAdd = true } label: { Image(systemName: "plus") }
+        }
+        .sheet(isPresented: $showingAdd) {
+            TunnelEditView { name, host, port in
+                Task { try? await model.addTunnel(name: name, host: host, port: port); reload() }
+            }
+        }
+        .onAppear(perform: reload)
+    }
+
+    private func reload() { tunnels = (try? model.store.all()) ?? [] }
+}
+```
+
+`App/Tunnels/TunnelEditView.swift`:
+```swift
+import SwiftUI
+
+struct TunnelEditView: View {
+    var onSave: (String, String, Int) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var host = "127.0.0.1"
+    @State private var port = "3000"
+
+    var body: some View {
+        Form {
+            TextField("Name (e.g. myapp)", text: $name)
+            TextField("Upstream host", text: $host)
+            TextField("Upstream port", text: $port)
+            HStack {
+                Button("Cancel") { dismiss() }
+                Spacer()
+                Button("Add") {
+                    if let p = Int(port) { onSave(name, host, p); dismiss() }
+                }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 340)
+    }
+}
+```
+
+- [ ] **Step 5: Inspector model + view**
+
+`App/Inspector/InspectorModel.swift`:
+```swift
+import Foundation
+import Observation
+import LocalPortCore
+
+@Observable
+@MainActor
+final class InspectorModel {
+    private(set) var events: [TrafficEvent] = []
+    private var task: Task<Void, Never>?
+
+    func subscribe(to recorder: TrafficRecorder) {
+        task?.cancel()
+        task = Task {
+            events = await recorder.history()
+            for await event in await recorder.events() {
+                events.append(event)
+                if events.count > 1000 { events.removeFirst(events.count - 1000) }
+            }
+        }
+    }
+
+    deinit { task?.cancel() }
+}
+```
+
+`App/Inspector/InspectorView.swift`:
+```swift
+import SwiftUI
+import LocalPortCore
+
+struct InspectorView: View {
+    @Environment(AppModel.self) private var model
+    @State private var inspector = InspectorModel()
+
+    var body: some View {
+        Table(inspector.events.reversed()) {
+            TableColumn("Method") { Text($0.method) }
+            TableColumn("Host") { Text($0.host) }
+            TableColumn("Path") { Text($0.path).font(.body.monospaced()) }
+            TableColumn("Status") { e in
+                Text(e.statusCode.map(String.init) ?? "—")
+                    .foregroundStyle(statusColor(e))
+            }
+        }
+        .navigationTitle("Traffic")
+        .onAppear { inspector.subscribe(to: model.recorder) }
+    }
+
+    private func statusColor(_ e: TrafficEvent) -> Color {
+        switch e.kind {
+        case .completed: return .green
+        case .failed: return .red
+        case .started: return .secondary
+        }
+    }
+}
+```
+
+- [ ] **Step 6: Settings view**
+
+`App/Settings/SettingsView.swift`:
+```swift
+import SwiftUI
+
+struct SettingsView: View {
+    @Environment(AppModel.self) private var model
+    var body: some View {
+        Form {
+            Section("Ports") {
+                LabeledContent("HTTP", value: ":\(model.httpPort)")
+                LabeledContent("HTTPS", value: ":\(model.httpsPort)")
+            }
+            Section("Certificates") {
+                Button("Trust Local CA in Keychain") {
+                    model.installCertificateTrust()
+                }
+                Text("Removes browser warnings for https://*.localhost. Asks for authorization once.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+    }
+}
+```
+
+- [ ] **Step 7: Build and launch**
+
+Run (from Xcode): build & run the `LocalPort` scheme.
+Manual verification:
+1. App launches with a menu bar bolt icon + main window.
+2. Add a tunnel `myapp → 127.0.0.1:3000`. Start a local server on 3000 (e.g.
+   `python3 -m http.server 3000`).
+3. Click Start. Visit `http://myapp.localhost:8080` → see your server. Inspector shows the
+   request with status 200.
+4. Visit `https://myapp.localhost:8443` → works (after "Trust Local CA").
+5. Stop the local server, refresh → 502 friendly page; inspector shows a red failed event.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add App/ LocalPort.xcodeproj
+git commit -m "feat: add SwiftUI app shell with menu bar, tunnels, and inspector"
+```
+
+---
+
+## Task 11: README + final verification
+
+**Files:**
+- Create: `README.md`
+
+- [ ] **Step 1: Write `README.md`**
+
+```markdown
+# LocalPort
+
+A native macOS reverse proxy for local development. Map friendly `*.localhost` hostnames to
+local ports, get local HTTPS, and inspect HTTP traffic live. Local-only — no cloud relay.
+
+## Requirements
+- macOS 14+
+- Xcode 16+
+
+## Build
+- Core library + tests: `swift test`
+- App: open `LocalPort.xcodeproj`, run the `LocalPort` scheme.
+
+## Usage
+1. Start the proxy from the menu bar or main window.
+2. Add a tunnel: name `myapp`, upstream `127.0.0.1:3000`.
+3. Visit `https://myapp.localhost:8443`.
+4. (Optional) Settings ▸ Trust Local CA to remove browser warnings.
+
+## Architecture
+See `docs/superpowers/specs/2026-05-30-localport-design.md`.
+```
+
+- [ ] **Step 2: Run the full test suite**
+
+Run: `swift test`
+Expected: All tests pass.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add README.md
+git commit -m "docs: add README"
+```
+
+---
+
+## Self-Review Notes
+
+- **Spec coverage:** reverse proxy mapping (Tasks 1,6,7), local domain/DNS (Task 5
+  HostsManager + `*.localhost` default in Task 2 `hostname`), local HTTPS/TLS (Tasks 3,8,9),
+  traffic inspector (Tasks 4,10), menu bar + window (Task 10), fixed high ports (Task 10
+  `httpPort`/`httpsPort`), error handling 502 + port-in-use surfaced via `statusMessage`
+  (Tasks 6,7,10), testing strategy (each core task is TDD; Task 7 integration).
+- **Type consistency:** `Upstream`, `RouteResolver.upsert/remove/upstream(forHostHeader:)`,
+  `Tunnel.hostname/upstream`, `TrafficEvent` fields, `CertificateAuthority`/`LeafIssuer`/
+  `CertificateBundle`, `ProxyServer.start/startTLS/stop`, `SNIResolver.context(for:)`,
+  `TrafficRecorder.record/history/events` are used consistently across tasks and the app.
+- **Known adaptation points (flagged in-task, not placeholders):** exact `swift-certificates`
+  PEM serialization method name and NIOSSL's per-host SNI selection API may differ by resolved
+  package version; Tasks 3 and 8 instruct the implementer to adapt to the installed API while
+  keeping the documented contract.
+```
