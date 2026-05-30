@@ -65,7 +65,22 @@ struct DomainCard: View {
                     .foregroundStyle(Theme.textSecondary)
             }
             .buttonStyle(.plain)
-            .help("Open in browser")
+            .help("Open in default browser")
+
+            if model.isInstalled(.safari) {
+                Button { model.open(tunnel, in: .safari) } label: {
+                    Image(systemName: "safari").foregroundStyle(Theme.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .help("Open in Safari")
+            }
+            if model.isInstalled(.chrome) {
+                Button { model.open(tunnel, in: .chrome) } label: {
+                    Image(systemName: "globe").foregroundStyle(Theme.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .help("Open in Chrome")
+            }
 
             Spacer()
 
@@ -97,6 +112,12 @@ struct DomainCard: View {
     private var cardMenu: some View {
         Menu {
             Button("Open in Browser") { open() }
+            if model.isInstalled(.chrome) {
+                Button("Open in Chrome") { model.open(tunnel, in: .chrome) }
+            }
+            if model.isInstalled(.safari) {
+                Button("Open in Safari") { model.open(tunnel, in: .safari) }
+            }
             Button("Edit…") { onEdit() }
             Button("Copy URL") {
                 NSPasteboard.general.clearContents()
@@ -142,6 +163,6 @@ struct DomainCard: View {
     }
 
     private func open() {
-        if let url = model.url(for: tunnel) { NSWorkspace.shared.open(url) }
+        model.open(tunnel)
     }
 }

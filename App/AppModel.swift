@@ -82,6 +82,35 @@ final class AppModel {
         URL(string: urlString(for: tunnel))
     }
 
+    enum Browser: String {
+        case `default`, chrome, safari
+        var bundleID: String? {
+            switch self {
+            case .default: return nil
+            case .chrome: return "com.google.Chrome"
+            case .safari: return "com.apple.Safari"
+            }
+        }
+    }
+
+    /// Whether a specific browser is installed (to show/hide its menu item).
+    func isInstalled(_ browser: Browser) -> Bool {
+        guard let id = browser.bundleID else { return true }
+        return NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) != nil
+    }
+
+    /// Opens a tunnel in a specific browser (falls back to the default browser).
+    func open(_ tunnel: TunnelData, in browser: Browser = .default) {
+        guard let url = url(for: tunnel) else { return }
+        if let id = browser.bundleID,
+           let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) {
+            NSWorkspace.shared.open([url], withApplicationAt: appURL,
+                                    configuration: NSWorkspace.OpenConfiguration())
+        } else {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     func toggle() async {
         isRunning ? await stop() : await start()
     }
