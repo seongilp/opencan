@@ -78,10 +78,8 @@ struct DomainCard: View {
             }
             .font(.system(size: 13, design: .monospaced))
 
-            Text(tunnel.enabled ? "Published" : "Disabled")
-                .font(.system(size: 12))
-                .foregroundStyle(tunnel.enabled ? Theme.textSecondary : Theme.textTertiary)
-                .frame(width: 70, alignment: .trailing)
+            statusBadge
+                .frame(width: 92, alignment: .trailing)
 
             Toggle("", isOn: Binding(
                 get: { tunnel.enabled },
@@ -116,6 +114,31 @@ struct DomainCard: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+    }
+
+    @ViewBuilder
+    private var statusBadge: some View {
+        if !tunnel.enabled {
+            badge(text: "Disabled", color: Theme.textTertiary, filled: false)
+        } else {
+            switch model.reachability(for: tunnel) {
+            case .live:
+                badge(text: "Live", color: Theme.green, filled: true)
+            case .unreachable:
+                badge(text: "Unreachable", color: .red, filled: true)
+            case .unknown:
+                badge(text: "Checking…", color: Theme.textTertiary, filled: false)
+            }
+        }
+    }
+
+    private func badge(text: String, color: Color, filled: Bool) -> some View {
+        HStack(spacing: 5) {
+            Circle().fill(filled ? color : .clear)
+                .overlay(Circle().strokeBorder(color, lineWidth: filled ? 0 : 1))
+                .frame(width: 7, height: 7)
+            Text(text).font(.system(size: 12)).foregroundStyle(color)
+        }
     }
 
     private func open() {

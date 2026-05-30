@@ -10,9 +10,13 @@ import KeyboardShortcuts
 final class AppModel {
     enum ProxyState: Equatable { case stopped, running }
 
+    enum Reachability: Equatable { case unknown, live, unreachable }
+
     private(set) var state: ProxyState = .stopped
     private(set) var statusMessage = "Stopped"
     private(set) var tunnels: [TunnelData] = []
+    private(set) var reachability: [UUID: Reachability] = [:]
+    private var reachabilityTask: Task<Void, Never>?
 
     // App listens on uncommon high ports (avoids conflicts); the root helper binds 80/443
     // and forwards onto these, so URLs need no port suffix.
@@ -40,9 +44,33 @@ final class AppModel {
             ?? (try! CertificateAuthority())
         reload()
         registerGlobalShortcut()
+        startReachabilityMonitor()
     }
 
     var isRunning: Bool { state == .running }
+
+    func reachability(for tunnel: TunnelData) -> Reachability {
+        reachability[tunnel.id] ?? .unknown
+    }
+
+    /// Periodically probes each tunnel's upstream so the UI can show Live / Unreachable.
+    private func startReachabilityMonitor() {
+        reachabilityTask?.cancel()
+        reachabilityTask = Task { [weak self] in
+            let scanner = PortScanner()
+            while !Task.isCancelled {
+                guard let self else { return }
+                let current = self.tunnels
+                var next: [UUID: Reachability] = [:]
+                for tunnel in current {
+                    let up = await scanner.probe(host: tunnel.upstreamHost, port: tunnel.upstreamPort)
+                    next[tunnel.id] = up ? .live : .unreachable
+                }
+                self.reachability = next
+                try? await Task.sleep(for: .seconds(3))
+            }
+        }
+    }
 
     /// Clean HTTPS URL for a tunnel (no port — the root helper forwards 443 → bind port).
     func urlString(for tunnel: TunnelData) -> String {

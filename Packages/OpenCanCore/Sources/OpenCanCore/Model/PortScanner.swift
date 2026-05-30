@@ -90,6 +90,11 @@ public struct PortScanner: Sendable {
         return soError == 0
     }
 
+    /// Async health check for a single upstream (used to show tunnel reachability).
+    public func probe(host: String, port: Int, timeout: TimeInterval = 0.3) async -> Bool {
+        await Task.detached { Self.isOpen(host: host, port: port, timeout: timeout) }.value
+    }
+
     /// A DNS-safe default tunnel name for a discovered port, e.g. 3000 → "port3000".
     public static func suggestedName(forPort port: Int) -> String { "port\(port)" }
 }
