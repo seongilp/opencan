@@ -158,7 +158,7 @@ private struct SidebarRow: View {
                 Text(title).foregroundStyle(Theme.textPrimary)
                 Spacer()
                 if let count {
-                    Text("\(count)").foregroundStyle(Theme.textTertiary)
+                    Text(String(count)).foregroundStyle(Theme.textTertiary)
                 }
             }
             .font(.system(size: 13))

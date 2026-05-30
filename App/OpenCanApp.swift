@@ -53,6 +53,7 @@ struct RootView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bg)
         .preferredColorScheme(.dark)
+        .task { await model.bootstrap() }
         .sheet(isPresented: $showingAdd) {
             TunnelEditView { name, host, port in
                 Task { await model.addTunnel(name: name, host: host, port: port) }

@@ -59,6 +59,13 @@ struct DomainCard: View {
             .buttonStyle(.plain)
             .help("Open \(model.urlString(for: tunnel))")
 
+            Button { open() } label: {
+                Image(systemName: "arrow.up.right.square")
+                    .foregroundStyle(Theme.textSecondary)
+            }
+            .buttonStyle(.plain)
+            .help("Open in browser")
+
             Spacer()
 
             HStack(spacing: 4) {

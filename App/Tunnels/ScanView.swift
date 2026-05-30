@@ -26,7 +26,7 @@ struct ScanView: View {
                 List {
                     ForEach(ports, id: \.self) { port in
                         HStack(spacing: 8) {
-                            Text("127.0.0.1:\(port)").font(.body.monospaced())
+                            Text("127.0.0.1:\(String(port))").font(.body.monospaced())
                             Spacer()
                             TextField("name", text: name(port)).frame(width: 110)
                             Text(".local").font(.caption).foregroundStyle(.secondary)

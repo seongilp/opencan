@@ -56,6 +56,11 @@ final class AppModel {
         isRunning ? await stop() : await start()
     }
 
+    /// Auto-start on launch. Re-prompts for admin only if hosts/helper need changes.
+    func bootstrap() async {
+        await start()
+    }
+
     func reload() {
         tunnels = (try? store.all()) ?? []
     }

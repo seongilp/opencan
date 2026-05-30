@@ -14,10 +14,17 @@ public struct SystemSetup: Sendable {
         self.hostsFile = hostsFile
     }
 
-    /// One admin prompt: update /etc/hosts and (re)install the forwarding LaunchDaemon.
-    public func apply(hostnames: [String], mappings: [RootHelper.Mapping]) throws {
+    /// Updates /etc/hosts and (re)installs the forwarding LaunchDaemon — but only prompts for
+    /// administrator authorization when something actually needs to change. Returns true if an
+    /// admin action was performed. Safe to call on every launch: a no-op when already set up.
+    @discardableResult
+    public func apply(hostnames: [String], mappings: [RootHelper.Mapping]) throws -> Bool {
         let existing = (try? String(contentsOf: hostsFile, encoding: .utf8)) ?? ""
         let hostsContent = HostsManager.renderManaged(existing: existing, hostnames: hostnames)
+
+        let hostsNeedsUpdate = hostsContent != existing
+        let helperMissing = !isHelperInstalled()
+        guard hostsNeedsUpdate || helperMissing else { return false }
 
         let tmp = FileManager.default.temporaryDirectory
         let hostsTmp = tmp.appendingPathComponent("opencan-hosts-\(UUID().uuidString)")
@@ -41,6 +48,7 @@ public struct SystemSetup: Sendable {
             "launchctl bootstrap system '\(RootHelper.plistPath)'",
         ].joined(separator: " ; ")
         try runAdmin(shell)
+        return true
     }
 
     /// Removes the forwarding LaunchDaemon (leaves /etc/hosts entries in place).
