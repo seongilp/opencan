@@ -34,7 +34,11 @@ final class AppModel {
     init() {
         self.container = try! ModelContainer(for: TunnelRecord.self)
         self.store = TunnelStore(persistence: SwiftDataTunnelPersistence(context: container.mainContext))
-        self.authority = try! CertificateAuthority()
+        let appSupport = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("OpenCan", isDirectory: true)
+        self.authority = (try? CertificateAuthorityStore(directory: appSupport).loadOrCreate())
+            ?? (try! CertificateAuthority())
         self.sni = SNIResolver(issuer: LeafIssuer(authority: authority))
         reload()
         registerGlobalShortcut()

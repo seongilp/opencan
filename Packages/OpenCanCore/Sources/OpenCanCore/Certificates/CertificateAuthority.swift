@@ -1,10 +1,12 @@
 import Foundation
 import Crypto
 import X509
+import SwiftASN1
 
 public struct CertificateAuthority: Sendable {
     public let certificate: Certificate
     public let privateKey: Certificate.PrivateKey
+    private let signingKey: P256.Signing.PrivateKey
 
     /// Generates a fresh self-signed root CA valid for 10 years.
     public init(commonName: String = "OpenCan Local CA",
@@ -28,12 +30,26 @@ public struct CertificateAuthority: Sendable {
             },
             issuerPrivateKey: caKey
         )
+        self.signingKey = key
         self.privateKey = caKey
         self.certificate = cert
+    }
+
+    /// Reconstructs a persisted CA from its private key + certificate PEM.
+    public init(privateKeyPEM: String, certificatePEM: String) throws {
+        let key = try P256.Signing.PrivateKey(pemRepresentation: privateKeyPEM)
+        self.signingKey = key
+        self.privateKey = Certificate.PrivateKey(key)
+        self.certificate = try Certificate(pemEncoded: certificatePEM)
     }
 
     /// PEM of the root CA certificate (for keychain trust install).
     public func certificatePEM() throws -> String {
         try certificate.serializeAsPEM().pemString
+    }
+
+    /// PEM of the CA private key (for persistence). Keep this file private.
+    public func privateKeyPEM() -> String {
+        signingKey.pemRepresentation
     }
 }

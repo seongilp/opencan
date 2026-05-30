@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 enum SidebarSelection: Hashable {
     case all
@@ -6,8 +7,14 @@ enum SidebarSelection: Hashable {
     case tunnel(UUID)
 }
 
+/// Keeps OpenCan running in the menu bar after the window is closed, so the proxy keeps serving.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+}
+
 @main
 struct OpenCanApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model = AppModel()
 
     var body: some Scene {
