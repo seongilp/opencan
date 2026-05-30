@@ -2,6 +2,7 @@ import Foundation
 import NIOCore
 import NIOPosix
 import NIOHTTP1
+import NIOSSL
 
 public actor ProxyServer {
     private let resolver: RouteResolver
@@ -9,6 +10,7 @@ public actor ProxyServer {
     private let group: EventLoopGroup
     private let ownsGroup: Bool
     private var channel: Channel?
+    private var tlsChannel: Channel?
 
     public init(resolver: RouteResolver, recorder: TrafficRecorder, group: EventLoopGroup? = nil) {
         self.resolver = resolver
@@ -41,9 +43,35 @@ public actor ProxyServer {
         return bound.localAddress?.port ?? port
     }
 
+    /// Starts an HTTPS listener that terminates TLS with a single wildcard `*.localhost`
+    /// certificate, then proxies exactly like the plain HTTP listener.
+    @discardableResult
+    public func startTLS(host: String = "127.0.0.1", port: Int, sni: SNIResolver,
+                         wildcardHost: String = "*.localhost") async throws -> Int {
+        let tlsContext = try await sni.context(for: wildcardHost)
+        let resolver = self.resolver
+        let recorder = self.recorder
+        let bootstrap = ServerBootstrap(group: group)
+            .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+            .childChannelInitializer { channel in
+                let sslHandler = NIOSSLServerHandler(context: tlsContext)
+                return channel.pipeline.addHandler(sslHandler).flatMap {
+                    channel.pipeline.configureHTTPServerPipeline()
+                }.flatMap {
+                    channel.pipeline.addHandler(ProxyHandler(resolver: resolver, recorder: recorder))
+                }
+            }
+            .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
+        let bound = try await bootstrap.bind(host: host, port: port).get()
+        self.tlsChannel = bound
+        return bound.localAddress?.port ?? port
+    }
+
     public func stop() async {
         try? await channel?.close().get()
+        try? await tlsChannel?.close().get()
         channel = nil
+        tlsChannel = nil
         if ownsGroup {
             try? await group.shutdownGracefully()
         }
