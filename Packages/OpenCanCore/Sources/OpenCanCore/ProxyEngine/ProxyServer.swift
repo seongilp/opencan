@@ -43,11 +43,11 @@ public actor ProxyServer {
         return bound.localAddress?.port ?? port
     }
 
-    /// Starts an HTTPS listener that terminates TLS with a single wildcard `*.localhost`
+    /// Starts an HTTPS listener that terminates TLS with a single wildcard `*.local`
     /// certificate, then proxies exactly like the plain HTTP listener.
     @discardableResult
     public func startTLS(host: String = "127.0.0.1", port: Int, sni: SNIResolver,
-                         wildcardHost: String = "*.localhost") async throws -> Int {
+                         wildcardHost: String = "*.local") async throws -> Int {
         let tlsContext = try await sni.context(for: wildcardHost)
         let resolver = self.resolver
         let recorder = self.recorder

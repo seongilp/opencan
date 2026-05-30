@@ -7,6 +7,9 @@ options:
 packages:
   OpenCanCore:
     path: .
+  KeyboardShortcuts:
+    url: https://github.com/sindresorhus/KeyboardShortcuts
+    from: "2.2.0"
 targets:
   OpenCan:
     type: application
@@ -16,6 +19,8 @@ targets:
     dependencies:
       - package: OpenCanCore
         product: OpenCanCore
+      - package: KeyboardShortcuts
+        product: KeyboardShortcuts
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.opencan.app
@@ -23,6 +28,7 @@ targets:
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
         GENERATE_INFOPLIST_FILE: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_LSUIElement: NO
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         SWIFT_VERSION: "6.0"

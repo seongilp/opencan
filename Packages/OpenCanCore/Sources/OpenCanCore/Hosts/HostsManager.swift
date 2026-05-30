@@ -2,7 +2,7 @@ import Foundation
 
 public struct HostsManager: Sendable {
     public static let defaultHostsFile = URL(fileURLWithPath: "/etc/hosts")
-    private static let marker = "# OpenCan"
+    public static let marker = "# OpenCan"
 
     private let hostsFile: URL
 
@@ -29,6 +29,24 @@ public struct HostsManager: Sendable {
         guard line.contains(Self.marker) else { return false }
         let tokens = line.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
         return tokens.contains(hostname)
+    }
+
+    /// Pure transform: given the current hosts-file text, return new text where OpenCan's
+    /// managed lines map exactly `hostnames` to 127.0.0.1 (existing managed lines replaced).
+    public static func renderManaged(existing: String, hostnames: [String]) -> String {
+        let kept = existing
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+            .filter { !$0.contains(marker) }
+        var lines = kept
+        // Drop trailing empty lines for a tidy append, then re-add a single separator.
+        while let last = lines.last, last.trimmingCharacters(in: .whitespaces).isEmpty {
+            lines.removeLast()
+        }
+        for host in hostnames {
+            lines.append("127.0.0.1\t\(host) \(marker)")
+        }
+        return lines.joined(separator: "\n") + "\n"
     }
 
     private func readLines() throws -> [String] {

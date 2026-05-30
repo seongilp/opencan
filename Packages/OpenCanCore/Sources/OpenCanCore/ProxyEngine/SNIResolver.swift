@@ -2,7 +2,7 @@ import Foundation
 import NIOSSL
 
 /// Builds and caches a `NIOSSLContext` for a hostname using a locally-issued leaf certificate.
-/// The proxy uses a single wildcard `*.localhost` context to serve all single-label subdomains.
+/// The proxy uses a single wildcard `*.local` context to serve all single-label subdomains.
 public actor SNIResolver {
     private let issuer: LeafIssuer
     private var cache: [String: NIOSSLContext] = [:]

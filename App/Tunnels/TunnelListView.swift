@@ -7,12 +7,27 @@ struct TunnelListView: View {
 
     var body: some View {
         List(model.tunnels) { tunnel in
-            VStack(alignment: .leading, spacing: 2) {
-                Text(tunnel.hostname).font(.body.monospaced())
-                Text("→ \(tunnel.upstreamHost):\(tunnel.upstreamPort)")
-                    .font(.caption).foregroundStyle(.secondary)
+            Button {
+                if let url = model.url(for: tunnel) { NSWorkspace.shared.open(url) }
+            } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(tunnel.hostname).font(.body.monospaced())
+                        Text("→ \(tunnel.upstreamHost):\(tunnel.upstreamPort)")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: "arrow.up.right.square")
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .help("Open https://\(tunnel.hostname):\(model.httpsPort)")
             .contextMenu {
+                Button("Open in Browser") {
+                    if let url = model.url(for: tunnel) { NSWorkspace.shared.open(url) }
+                }
                 Button("Copy HTTPS URL") {
                     let url = "https://\(tunnel.hostname):\(model.httpsPort)"
                     NSPasteboard.general.clearContents()

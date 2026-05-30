@@ -29,3 +29,27 @@ private func tempFile(_ contents: String = "") throws -> URL {
     #expect(!text.contains("a.test"))
     #expect(text.contains("localhost")) // untouched
 }
+
+@Test func renderManagedReplacesBlockAndPreservesUserLines() {
+    let existing = """
+    127.0.0.1\tlocalhost
+    255.255.255.255\tbroadcasthost
+    127.0.0.1\told.local # OpenCan
+    """
+    let result = HostsManager.renderManaged(existing: existing, hostnames: ["a.local", "b.local"])
+    // user lines kept
+    #expect(result.contains("127.0.0.1\tlocalhost"))
+    #expect(result.contains("broadcasthost"))
+    // stale managed entry removed, new ones present exactly once
+    #expect(!result.contains("old.local"))
+    #expect(result.components(separatedBy: "a.local").count - 1 == 1)
+    #expect(result.contains("127.0.0.1\ta.local \(HostsManager.marker)"))
+    #expect(result.contains("127.0.0.1\tb.local \(HostsManager.marker)"))
+}
+
+@Test func renderManagedEmptyClearsManagedLines() {
+    let existing = "127.0.0.1\tlocalhost\n127.0.0.1\tx.local # OpenCan\n"
+    let result = HostsManager.renderManaged(existing: existing, hostnames: [])
+    #expect(!result.contains("x.local"))
+    #expect(result.contains("localhost"))
+}

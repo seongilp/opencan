@@ -27,8 +27,8 @@ public struct TunnelData: Sendable, Identifiable, Hashable {
         self.createdAt = createdAt
     }
 
-    /// Friendly local hostname, e.g. "myapp.localhost".
-    public var hostname: String { "\(name).localhost" }
+    /// Friendly local hostname, e.g. "myapp.local".
+    public var hostname: String { "\(name).local" }
 
     public var upstream: Upstream { Upstream(host: upstreamHost, port: upstreamPort) }
 }

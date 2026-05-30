@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import SwiftData
 import OpenCanCore
+import KeyboardShortcuts
 
 @Observable
 @MainActor
@@ -22,6 +23,7 @@ final class AppModel {
     private let resolver = RouteResolver()
     private let authority: CertificateAuthority
     private let sni: SNIResolver
+    private let hostsInstaller = HostsInstaller()
     private var server: ProxyServer?
 
     init() {
@@ -30,9 +32,19 @@ final class AppModel {
         self.authority = try! CertificateAuthority()
         self.sni = SNIResolver(issuer: LeafIssuer(authority: authority))
         reload()
+        registerGlobalShortcut()
     }
 
     var isRunning: Bool { state == .running }
+
+    /// URL to open a tunnel in the browser (HTTPS).
+    func url(for tunnel: TunnelData) -> URL? {
+        URL(string: "https://\(tunnel.hostname):\(httpsPort)")
+    }
+
+    func toggle() async {
+        isRunning ? await stop() : await start()
+    }
 
     func reload() {
         tunnels = (try? store.all()) ?? []
@@ -40,6 +52,7 @@ final class AppModel {
 
     func start() async {
         guard !isRunning else { return }
+        await syncHosts()
         do {
             for tunnel in tunnels {
                 await resolver.upsert(host: tunnel.hostname, upstream: tunnel.upstream)
@@ -67,6 +80,7 @@ final class AppModel {
             let tunnel = try store.create(name: name, upstreamHost: host, upstreamPort: port)
             await resolver.upsert(host: tunnel.hostname, upstream: tunnel.upstream)
             reload()
+            if isRunning { await syncHosts() }
         } catch {
             statusMessage = "Could not add tunnel: \(error)"
         }
@@ -76,6 +90,7 @@ final class AppModel {
         await resolver.remove(host: tunnel.hostname)
         try? store.delete(tunnel)
         reload()
+        if isRunning { await syncHosts() }
     }
 
     func installCertificateTrust() {
@@ -86,5 +101,23 @@ final class AppModel {
         }
         let status = (try? trust.installTrust(caFile: url)) ?? -1
         statusMessage = status == 0 ? "Local CA trusted" : "CA trust install cancelled"
+    }
+
+    /// Registers `*.local` hostnames in /etc/hosts (admin auth) so they resolve to loopback.
+    func syncHosts() async {
+        let names = tunnels.map(\.hostname)
+        let installer = hostsInstaller
+        do {
+            try await Task.detached { try installer.sync(hostnames: names) }.value
+        } catch {
+            statusMessage = "Hosts update needs admin permission"
+        }
+    }
+
+    private func registerGlobalShortcut() {
+        KeyboardShortcuts.onKeyDown(for: .toggleProxy) { [weak self] in
+            guard let self else { return }
+            Task { await self.toggle() }
+        }
     }
 }

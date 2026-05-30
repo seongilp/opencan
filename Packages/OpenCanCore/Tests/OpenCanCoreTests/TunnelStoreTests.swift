@@ -11,7 +11,7 @@ private func makeStore() -> TunnelStore {
     try store.create(name: "myapp", upstreamHost: "127.0.0.1", upstreamPort: 3000)
     let all = try store.all()
     #expect(all.count == 1)
-    #expect(all.first?.hostname == "myapp.localhost")
+    #expect(all.first?.hostname == "myapp.local")
 }
 
 @Test @MainActor func rejectsDuplicateHostname() throws {
