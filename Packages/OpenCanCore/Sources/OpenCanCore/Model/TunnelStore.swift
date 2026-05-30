@@ -32,6 +32,14 @@ public final class TunnelStore {
         return tunnel
     }
 
+    @discardableResult
+    public func setEnabled(_ tunnel: TunnelData, _ enabled: Bool) throws -> TunnelData {
+        var updated = tunnel
+        updated.enabled = enabled
+        try persistence.update(updated)
+        return updated
+    }
+
     public func delete(_ tunnel: TunnelData) throws {
         try persistence.delete(id: tunnel.id)
     }

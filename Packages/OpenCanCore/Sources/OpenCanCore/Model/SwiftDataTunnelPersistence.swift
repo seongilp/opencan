@@ -10,24 +10,27 @@ public final class TunnelRecord {
     public var name: String
     public var upstreamHost: String
     public var upstreamPort: Int
+    public var enabled: Bool = true
     public var createdAt: Date
 
-    public init(id: UUID, name: String, upstreamHost: String, upstreamPort: Int, createdAt: Date) {
+    public init(id: UUID, name: String, upstreamHost: String, upstreamPort: Int,
+                enabled: Bool = true, createdAt: Date) {
         self.id = id
         self.name = name
         self.upstreamHost = upstreamHost
         self.upstreamPort = upstreamPort
+        self.enabled = enabled
         self.createdAt = createdAt
     }
 
     convenience init(from data: TunnelData) {
         self.init(id: data.id, name: data.name, upstreamHost: data.upstreamHost,
-                  upstreamPort: data.upstreamPort, createdAt: data.createdAt)
+                  upstreamPort: data.upstreamPort, enabled: data.enabled, createdAt: data.createdAt)
     }
 
     var asData: TunnelData {
         TunnelData(id: id, name: name, upstreamHost: upstreamHost,
-                   upstreamPort: upstreamPort, createdAt: createdAt)
+                   upstreamPort: upstreamPort, enabled: enabled, createdAt: createdAt)
     }
 }
 
@@ -45,6 +48,18 @@ public final class SwiftDataTunnelPersistence: TunnelPersisting {
 
     public func insert(_ tunnel: TunnelData) throws {
         context.insert(TunnelRecord(from: tunnel))
+        try context.save()
+    }
+
+    public func update(_ tunnel: TunnelData) throws {
+        let target = tunnel.id
+        let matches = try context.fetch(FetchDescriptor<TunnelRecord>()).filter { $0.id == target }
+        for record in matches {
+            record.name = tunnel.name
+            record.upstreamHost = tunnel.upstreamHost
+            record.upstreamPort = tunnel.upstreamPort
+            record.enabled = tunnel.enabled
+        }
         try context.save()
     }
 

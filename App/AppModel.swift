@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import Observation
 import SwiftData
 import OpenCanCore
@@ -73,7 +74,7 @@ final class AppModel {
         guard !isRunning else { return }
         await applySystemSetup()
         do {
-            for tunnel in tunnels {
+            for tunnel in tunnels where tunnel.enabled {
                 await resolver.upsert(host: tunnel.hostname, upstream: tunnel.upstream)
             }
             let server = ProxyServer(resolver: resolver, recorder: recorder)
@@ -105,6 +106,18 @@ final class AppModel {
         }
     }
 
+    func setEnabled(_ tunnel: TunnelData, _ enabled: Bool) async {
+        try? store.setEnabled(tunnel, enabled)
+        reload()
+        if isRunning {
+            if enabled {
+                await resolver.upsert(host: tunnel.hostname, upstream: tunnel.upstream)
+            } else {
+                await resolver.remove(host: tunnel.hostname)
+            }
+        }
+    }
+
     func deleteTunnel(_ tunnel: TunnelData) async {
         await resolver.remove(host: tunnel.hostname)
         try? store.delete(tunnel)
@@ -120,6 +133,16 @@ final class AppModel {
         }
         let status = (try? trust.installTrust(caFile: url)) ?? -1
         statusMessage = status == 0 ? "Local CA trusted" : "CA trust install cancelled"
+    }
+
+    /// Writes the root CA to Downloads and reveals it in Finder.
+    func revealRootCertificate() {
+        let trust = KeychainTrust()
+        let dir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        if let url = try? trust.exportCACertificate(authority, to: dir) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        }
     }
 
     /// Registers `*.local` in /etc/hosts and installs the 80/443 forwarding helper

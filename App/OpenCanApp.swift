@@ -1,16 +1,23 @@
 import SwiftUI
 
+enum SidebarSelection: Hashable {
+    case all
+    case traffic
+    case tunnel(UUID)
+}
+
 @main
 struct OpenCanApp: App {
     @State private var model = AppModel()
 
     var body: some Scene {
         Window("OpenCan", id: "main") {
-            ContentView()
+            RootView()
                 .environment(model)
-                .frame(minWidth: 760, minHeight: 480)
+                .frame(minWidth: 880, minHeight: 560)
         }
         .windowResizability(.contentMinSize)
+        .windowStyle(.hiddenTitleBar)
 
         MenuBarExtra("OpenCan", systemImage: model.isRunning ? "bolt.fill" : "bolt.slash") {
             MenuBarView()
@@ -25,25 +32,46 @@ struct OpenCanApp: App {
     }
 }
 
-struct ContentView: View {
+struct RootView: View {
     @Environment(AppModel.self) private var model
+    @State private var selection: SidebarSelection = .all
+    @State private var showingAdd = false
+    @State private var showingScan = false
 
     var body: some View {
-        NavigationSplitView {
-            TunnelListView()
-                .navigationSplitViewColumnWidth(min: 240, ideal: 280)
-        } detail: {
-            InspectorView()
+        HStack(spacing: 0) {
+            SidebarView(selection: $selection, showingAdd: $showingAdd, showingScan: $showingScan)
+                .frame(width: Theme.sidebarWidth)
+                .background(Theme.sidebar)
+
+            Rectangle().fill(Theme.stroke).frame(width: 1)
+
+            detail
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Theme.bg)
         }
-        .toolbar {
-            ToolbarItem(placement: .status) {
-                Text(model.statusMessage).foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.bg)
+        .preferredColorScheme(.dark)
+        .sheet(isPresented: $showingAdd) {
+            TunnelEditView { name, host, port in
+                Task { await model.addTunnel(name: name, host: host, port: port) }
             }
-            ToolbarItem(placement: .primaryAction) {
-                Button(model.isRunning ? "Stop" : "Start") {
-                    Task { model.isRunning ? await model.stop() : await model.start() }
-                }
-            }
+        }
+        .sheet(isPresented: $showingScan) {
+            ScanView()
+        }
+    }
+
+    @ViewBuilder
+    private var detail: some View {
+        switch selection {
+        case .traffic:
+            InspectorView()
+        case .all:
+            DomainsView(tunnels: model.tunnels, showingAdd: $showingAdd)
+        case .tunnel(let id):
+            DomainsView(tunnels: model.tunnels.filter { $0.id == id }, showingAdd: $showingAdd)
         }
     }
 }

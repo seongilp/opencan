@@ -16,14 +16,16 @@ public struct TunnelData: Sendable, Identifiable, Hashable {
     public var name: String
     public var upstreamHost: String
     public var upstreamPort: Int
+    public var enabled: Bool
     public var createdAt: Date
 
     public init(id: UUID = UUID(), name: String, upstreamHost: String,
-                upstreamPort: Int, createdAt: Date = .now) {
+                upstreamPort: Int, enabled: Bool = true, createdAt: Date = .now) {
         self.id = id
         self.name = name
         self.upstreamHost = upstreamHost
         self.upstreamPort = upstreamPort
+        self.enabled = enabled
         self.createdAt = createdAt
     }
 
