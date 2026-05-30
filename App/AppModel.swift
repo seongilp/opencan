@@ -13,8 +13,12 @@ final class AppModel {
     private(set) var statusMessage = "Stopped"
     private(set) var tunnels: [TunnelData] = []
 
+    // Unprivileged bind ports; pf forwards the public ports below onto these.
     let httpPort = 8080
     let httpsPort = 8443
+    // Public ports users actually connect on (no port suffix in URLs).
+    let publicHTTPPort = 80
+    let publicHTTPSPort = 443
 
     let recorder = TrafficRecorder()
 
@@ -23,7 +27,7 @@ final class AppModel {
     private let resolver = RouteResolver()
     private let authority: CertificateAuthority
     private let sni: SNIResolver
-    private let hostsInstaller = HostsInstaller()
+    private let systemSetup = SystemSetup()
     private var server: ProxyServer?
 
     init() {
@@ -37,9 +41,14 @@ final class AppModel {
 
     var isRunning: Bool { state == .running }
 
-    /// URL to open a tunnel in the browser (HTTPS).
+    /// Clean HTTPS URL for a tunnel (no port suffix — pf forwards 443 → bind port).
+    func urlString(for tunnel: TunnelData) -> String {
+        "https://\(tunnel.hostname)"
+    }
+
+    /// URL to open a tunnel in the browser.
     func url(for tunnel: TunnelData) -> URL? {
-        URL(string: "https://\(tunnel.hostname):\(httpsPort)")
+        URL(string: urlString(for: tunnel))
     }
 
     func toggle() async {
@@ -52,7 +61,7 @@ final class AppModel {
 
     func start() async {
         guard !isRunning else { return }
-        await syncHosts()
+        await applySystemSetup()
         do {
             for tunnel in tunnels {
                 await resolver.upsert(host: tunnel.hostname, upstream: tunnel.upstream)
@@ -62,7 +71,7 @@ final class AppModel {
             _ = try await server.startTLS(host: "127.0.0.1", port: httpsPort, sni: sni)
             self.server = server
             state = .running
-            statusMessage = "Running on :\(httpPort) / :\(httpsPort)"
+            statusMessage = "Running on https://*.local"
         } catch {
             statusMessage = "Failed to start: \(error.localizedDescription)"
         }
@@ -71,6 +80,7 @@ final class AppModel {
     func stop() async {
         await server?.stop()
         server = nil
+        await teardownForwarding()
         state = .stopped
         statusMessage = "Stopped"
     }
@@ -80,7 +90,7 @@ final class AppModel {
             let tunnel = try store.create(name: name, upstreamHost: host, upstreamPort: port)
             await resolver.upsert(host: tunnel.hostname, upstream: tunnel.upstream)
             reload()
-            if isRunning { await syncHosts() }
+            if isRunning { await applySystemSetup() }
         } catch {
             statusMessage = "Could not add tunnel: \(error)"
         }
@@ -90,7 +100,7 @@ final class AppModel {
         await resolver.remove(host: tunnel.hostname)
         try? store.delete(tunnel)
         reload()
-        if isRunning { await syncHosts() }
+        if isRunning { await applySystemSetup() }
     }
 
     func installCertificateTrust() {
@@ -103,15 +113,24 @@ final class AppModel {
         statusMessage = status == 0 ? "Local CA trusted" : "CA trust install cancelled"
     }
 
-    /// Registers `*.local` hostnames in /etc/hosts (admin auth) so they resolve to loopback.
-    func syncHosts() async {
+    /// Registers `*.local` in /etc/hosts and loads pf port forwarding (one admin prompt).
+    func applySystemSetup() async {
         let names = tunnels.map(\.hostname)
-        let installer = hostsInstaller
+        let setup = systemSetup
+        let mappings = [
+            SystemSetup.PortMapping(from: publicHTTPSPort, to: httpsPort),
+            SystemSetup.PortMapping(from: publicHTTPPort, to: httpPort),
+        ]
         do {
-            try await Task.detached { try installer.sync(hostnames: names) }.value
+            try await Task.detached { try setup.apply(hostnames: names, mappings: mappings) }.value
         } catch {
-            statusMessage = "Hosts update needs admin permission"
+            statusMessage = "System setup needs admin permission"
         }
+    }
+
+    private func teardownForwarding() async {
+        let setup = systemSetup
+        try? await Task.detached { try setup.teardownForwarding() }.value
     }
 
     private func registerGlobalShortcut() {
