@@ -51,6 +51,19 @@ public struct SystemSetup: Sendable {
         return true
     }
 
+    /// Installs the root CA into the System keychain as a trusted root (admin prompt).
+    /// Safari's sandboxed networking only honors the admin trust domain, so login-keychain
+    /// trust is not enough — this is what makes `https://name.local` work in Safari.
+    public func trustRootInSystemKeychain(certificatePEM: String) throws {
+        let tmp = FileManager.default.temporaryDirectory
+            .appendingPathComponent("opencan-ca-\(UUID().uuidString).pem")
+        try certificatePEM.write(to: tmp, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        let shell = "security add-trusted-cert -d -r trustRoot "
+            + "-k /Library/Keychains/System.keychain '\(tmp.path)'"
+        try runAdmin(shell)
+    }
+
     /// Removes the forwarding LaunchDaemon (leaves /etc/hosts entries in place).
     public func removeHelper() throws {
         let shell = [

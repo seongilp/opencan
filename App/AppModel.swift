@@ -153,13 +153,19 @@ final class AppModel {
     }
 
     func installCertificateTrust() {
-        let trust = KeychainTrust()
-        guard let url = try? trust.exportCACertificate(authority, to: FileManager.default.temporaryDirectory) else {
+        guard let pem = try? authority.certificatePEM() else {
             statusMessage = "Could not export CA certificate"
             return
         }
-        let status = (try? trust.installTrust(caFile: url)) ?? -1
-        statusMessage = status == 0 ? "Local CA trusted" : "CA trust install cancelled"
+        let setup = systemSetup
+        Task {
+            do {
+                try await Task.detached { try setup.trustRootInSystemKeychain(certificatePEM: pem) }.value
+                statusMessage = "Local CA trusted (Safari & Chrome)"
+            } catch {
+                statusMessage = "CA trust install cancelled"
+            }
+        }
     }
 
     /// Writes the root CA to Downloads and reveals it in Finder.
