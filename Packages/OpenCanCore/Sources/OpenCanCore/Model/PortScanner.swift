@@ -10,27 +10,37 @@ public struct PortScanner: Sendable {
     /// Common local development ports plus the 3000/4000/5000/8000 ranges.
     public static let defaultPorts: [Int] = {
         var ports = Set<Int>()
-        for base in [3000, 4000, 5000, 8000] {
-            for p in base...(base + 10) { ports.insert(p) }
-        }
-        ports.formUnion([4200, 5173, 5174, 8888, 9000, 9090])  // angular, vite, jupyter, etc.
+        for p in 3000...3010 { ports.insert(p) }
+        for p in 4000...4010 { ports.insert(p) }
+        for p in 5000...5100 { ports.insert(p) }   // full 5000s range
+        for p in 8000...8010 { ports.insert(p) }
+        // popular named dev ports (vite, angular, storybook, postgres, etc.)
+        ports.formUnion([4200, 5173, 5174, 5432, 5500, 5555, 6006, 8080, 8081, 8443, 8888, 9000, 9090])
         return ports.sorted()
     }()
 
     /// Returns the subset of `ports` that currently accept TCP connections on `host`.
+    /// Concurrency is bounded so a wide range never exhausts the process file-descriptor limit.
     public func scan(ports: [Int] = PortScanner.defaultPorts,
                      host: String = "127.0.0.1",
-                     timeout: TimeInterval = 0.25) async -> [Int] {
+                     timeout: TimeInterval = 0.25,
+                     maxConcurrent: Int = 64) async -> [Int] {
+        var open: [Int] = []
+        var next = 0
         await withTaskGroup(of: Int?.self) { group in
-            for port in ports {
+            func enqueue() {
+                guard next < ports.count else { return }
+                let port = ports[next]
+                next += 1
                 group.addTask { Self.isOpen(host: host, port: port, timeout: timeout) ? port : nil }
             }
-            var open: [Int] = []
+            for _ in 0..<min(maxConcurrent, ports.count) { enqueue() }
             for await result in group {
                 if let port = result { open.append(port) }
+                enqueue()
             }
-            return open.sorted()
         }
+        return open.sorted()
     }
 
     /// Non-blocking TCP connect with a timeout; true if something is listening.
