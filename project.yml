@@ -9,7 +9,7 @@ packages:
     path: .
   KeyboardShortcuts:
     url: https://github.com/sindresorhus/KeyboardShortcuts
-    from: "2.4.0"
+    from: "3.1.0"
 targets:
   OpenCan:
     type: application
