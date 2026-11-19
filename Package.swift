@@ -8,9 +8,9 @@ let package = Package(
         .library(name: "OpenCanCore", targets: ["OpenCanCore"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
-        .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.27.0"),
-        .package(url: "https://github.com/apple/swift-certificates.git", from: "1.5.0"),
+        .package(url: "https://github.com/apple/swift-nio.git", from: "2.105.0"),
+        .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.37.6"),
+        .package(url: "https://github.com/apple/swift-certificates.git", from: "1.21.1"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "5.1.1"),
     ],
     targets: [
