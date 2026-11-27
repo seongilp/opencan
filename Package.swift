@@ -9,7 +9,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.105.2"),
-        .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.37.7"),
+        .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.37.8"),
         .package(url: "https://github.com/apple/swift-certificates.git", from: "1.21.2"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "5.2.0"),
     ],
